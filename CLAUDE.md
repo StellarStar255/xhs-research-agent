@@ -13,6 +13,13 @@ Both share xhs_reader/agent_prompt.md ({TOOLS}/{DATE} placeholders). Chats live 
 data/chats/*.json (+ data/chats/<id>/ images), scraped notes in data/research/<id>/.
 Scraper pacing/budgets/cooldown live in scraper.py (`./xhs limits`).
 
+Entry point: `python -m xhs_reader` (xhs_reader/app.py) picks a free port (8765 belongs to
+another app on the maintainer's Mac), reuses a running instance, opens the browser.
+Packaging: packaging/*.spec (PyInstaller, two exes: windowed GUI + console `xhs-cli`),
+packaging/macos_sign_notarize.sh, packaging/windows_installer.iss, .github/workflows/release.yml.
+Paths/child processes go through xhs_reader/paths.py and procutil.py (cross-platform; never
+os.kill(pid, 0) — it kills on Windows). Packaged data dir: ~/.xhs-research-agent.
+
 ## When the user asks *this* Claude Code session to research
 
 1. Pick 1–3 good search keywords for the question (Chinese, the way users on XHS phrase things).

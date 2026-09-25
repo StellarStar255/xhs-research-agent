@@ -17,24 +17,22 @@ import os
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import threading
 import time
 import uuid
 from pathlib import Path
 
-from . import settings
-from .scraper import DATA_DIR, ROOT
+from . import paths, procutil, settings
+from .paths import DATA_DIR
 
 CHATS_DIR = DATA_DIR / "chats"
-XHS = str(ROOT / "xhs")
 MODEL = os.environ.get("XHS_AGENT_MODEL")  # e.g. "sonnet" for faster answers
 EXT = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif"}
 DEFAULT_IMAGE_PROMPT = "请看看这张图片，结合小红书上的信息帮我分析一下。"
 
 _TEMPLATE = (Path(__file__).parent / "agent_prompt.md").read_text()
-CLAUDE_TOOLS = f"""抓取命令（通过 Bash 运行，每次把 timeout 设为 600000）：
+CLAUDE_TOOLS = """抓取命令（通过 Bash 运行，每次把 timeout 设为 600000）：
 
 ```
 {XHS} research "<搜索关键词>" -q "<用户的原始问题>" [-n 笔记数，默认8] [-c 每篇评论数，默认15]
@@ -55,13 +53,15 @@ _runs = {}  # chat id -> running turn (ClaudeRun or llm.ApiRun)
 class ClaudeRun:
     def __init__(self, proc):
         self.proc = proc
+        self.stopping = False
 
     def alive(self):
         return self.proc.poll() is None
 
     def stop(self):
         if self.alive():
-            os.killpg(self.proc.pid, signal.SIGTERM)
+            self.stopping = True
+            procutil.kill_tree(self.proc)
 
 
 # ---------- storage ----------
@@ -180,20 +180,22 @@ def _start_claude(chat, text, images):
     content = [{"type": "image", "source": {"type": "base64", "media_type": i["media_type"], "data": i["data"]}}
                for i in images]
     content.append({"type": "text", "text": text or DEFAULT_IMAGE_PROMPT})
+    xhs = paths.xhs_script()
     cmd = [settings.find_claude() or "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-           "--include-partial-messages", "--system-prompt", system_prompt(CLAUDE_TOOLS),
-           "--tools", "Bash", "--allowedTools", f"Bash({XHS} research:*)", f"Bash({XHS} digest:*)",
+           "--include-partial-messages", "--system-prompt", system_prompt(CLAUDE_TOOLS.replace("{XHS}", xhs)),
+           "--tools", "Bash", "--allowedTools", f"Bash({xhs} research:*)", f"Bash({xhs} digest:*)",
            "--strict-mcp-config"]
     if MODEL:
         cmd += ["--model", MODEL]
     if chat.get("claude_session"):
         cmd += ["--resume", chat["claude_session"]]
-    env = {**os.environ, "BASH_DEFAULT_TIMEOUT_MS": "600000", "BASH_MAX_TIMEOUT_MS": "900000"}
+    env = paths.child_env({"BASH_DEFAULT_TIMEOUT_MS": "600000", "BASH_MAX_TIMEOUT_MS": "900000"})
     env.pop("CLAUDECODE", None)
     # claude may be installed via node; make sure its own bin dir is on PATH.
     env["PATH"] = os.pathsep.join([str(Path(cmd[0]).parent), env.get("PATH", "")])
-    proc = subprocess.Popen(cmd, cwd=ROOT, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    proc = procutil.popen(cmd, cwd=DATA_DIR, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, text=True, bufsize=1)
     proc.stdin.write(json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n")
     proc.stdin.close()
     threading.Thread(target=_pump, args=(chat["id"], proc), daemon=True).start()
@@ -331,7 +333,7 @@ def _pump(cid, proc):
                 continue
         update(cid, lambda chat, msg: _handle(chat, msg, ev))
     proc.wait()
-    stopped = proc.returncode in (-15, 143)
+    stopped = getattr(_runs.get(cid), "stopping", False)
     finish(cid, stopped=stopped, error=None if stopped else ("\n".join(noise).strip()[-500:] or f"exit {proc.returncode}"))
 
 

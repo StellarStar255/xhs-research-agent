@@ -4,3 +4,4 @@ uvicorn>=0.30
 markdown>=3.6
 pydantic>=2
 openai>=1.40
+psutil>=5.9

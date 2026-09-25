@@ -46,3 +46,9 @@ GetNewPython.py
 /.venv/
 /.images/
 *.tmp
+
+# packaging outputs
+/build/
+/dist/
+/THIRD_PARTY_LICENSES.txt
+*.dmg

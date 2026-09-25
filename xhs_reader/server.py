@@ -1,20 +1,15 @@
-"""Local chat GUI:  python -m xhs_reader.server  ->  http://localhost:8766 (XHS_PORT to change)"""
-import os
+"""Local chat GUI (FastAPI). Started by xhs_reader.app: `python -m xhs_reader` or the packaged app."""
 import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 import markdown
-import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import agent, scraper, settings, store
-
-ROOT = Path(__file__).resolve().parent.parent
+from . import agent, paths, procutil, scraper, settings, store
 app = FastAPI()
 _status = {"at": 0, "value": None}
 _login = {"proc": None, "state": "idle", "message": ""}
@@ -223,8 +218,9 @@ def login():
     p = _login["proc"]
     if p and p.poll() is None:
         return login_status()
-    _login.update(state="waiting", message="", proc=subprocess.Popen(
-        [sys.executable, "-m", "xhs_reader.cli", "login"], cwd=ROOT,
+    paths.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _login.update(state="waiting", message="", proc=procutil.popen(
+        paths.cli_command("login"), cwd=paths.DATA_DIR, env=paths.child_env(),
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
     return login_status()
 
@@ -245,6 +241,24 @@ def login_status():
     return {"state": _login["state"], "message": _login["message"]}
 
 
+@app.get("/api/ping")
+def ping():
+    """Lets a second launch find this already-running instance."""
+    return {"app": paths.APP_ID}
+
+
+server = None  # the uvicorn.Server, set by xhs_reader.app
+
+
+@app.post("/api/shutdown")
+def shutdown():
+    for cid in [c["id"] for c in agent.list_chats() if c["running"]]:
+        agent.stop(cid)
+    if server:
+        server.should_exit = True
+    return {"ok": True}
+
+
 if __name__ == "__main__":
-    agent.recover()
-    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("XHS_PORT", 8766)))
+    from .app import main
+    main()

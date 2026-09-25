@@ -8,14 +8,11 @@ re-inlined as data URLs when sent.
 """
 import base64
 import json
-import os
-import signal
 import subprocess
 import threading
 import time
 
-from . import agent, settings
-from .scraper import ROOT
+from . import agent, paths, procutil, settings
 
 MAX_STEPS = 10           # model calls per turn
 MAX_SEARCHES = 3         # search_xiaohongshu calls per turn
@@ -61,7 +58,7 @@ class ApiRun:
         self.stopped = True
         p = self.proc
         if p and p.poll() is None:
-            os.killpg(p.pid, signal.SIGTERM)
+            procutil.kill_tree(p)
 
     def _main(self):
         try:
@@ -143,8 +140,8 @@ def _repair(history):
 
 def _run_cli(run, args):
     """Run the scraper CLI, killable via run.stop()."""
-    run.proc = subprocess.Popen([agent.XHS, *args], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, start_new_session=True)
+    run.proc = procutil.popen(paths.cli_command(*args), cwd=paths.DATA_DIR, env=paths.child_env(),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
         out, _ = run.proc.communicate(timeout=900)
     except subprocess.TimeoutExpired:

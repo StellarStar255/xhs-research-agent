@@ -41,13 +41,27 @@
 - 抓取：用 Playwright 驱动本机的 Google Chrome，通过监听网页自身的接口响应拿到搜索结果和评论，笔记详情从页面状态里读取。
 - 推理：两种后端用同一份提示词（`xhs_reader/agent_prompt.md`）。API 模式下，每轮最多搜 3 次、24 篇的限制由代码强制执行，不依赖模型是否听话。
 
-## 安装
+## 下载安装（推荐）
+
+到 [Releases](https://github.com/StellarStar255/xhs-research-agent/releases) 下载最新版：
+
+- **macOS（Apple 芯片 M1 及以后）**：下载 `.dmg`，打开后把「小红书调研助手」拖进「应用程序」，然后双击打开。
+- **Windows 10/11（64 位）**：下载 `-setup.exe` 安装，从开始菜单或桌面打开。安装时如果出现「Windows 已保护你的电脑」，点「更多信息 → 仍要运行」（Windows 版没有代码签名）。
+
+需要先安装 [Google Chrome](https://www.google.com/chrome/)（Windows 上没有 Chrome 时会使用系统自带的 Edge）。
+
+打开后会在浏览器里显示聊天页面，应用本身没有窗口，也不占 Dock。要关闭它，点页面左下角的「退出」；再次双击图标会重新打开页面。
+你的登录状态、对话记录和设置保存在 `~/.xhs-research-agent`（Windows：`%USERPROFILE%\.xhs-research-agent`），卸载或升级应用都不会删除它们。
+
+## 从源码运行
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-./start.sh       # 打开 http://localhost:8766
+./start.sh       # 打开 http://localhost:8766（端口被占用时自动换一个）
 ```
+
+源码运行时，数据保存在项目里的 `data/` 目录。
 
 第一次打开时，页面会引导你：
 1. **登录小红书**：点「扫码登录小红书」会弹出一个 Chrome 窗口，用小红书 App 扫码即可。登录状态保存在 `data/profile`，一般能保持很久；过期了，助手会在对话里提示你重新扫码。
@@ -61,6 +75,7 @@ python3 -m venv .venv
 ./xhs search "关键词" -n 20            # 只抓取，保存到 data/research/<id>/
 ./xhs digest <id>                     # 重新输出某次抓取的摘要
 ./xhs list
+./xhs selftest                        # 检查能否启动本机浏览器（不访问小红书）
 ```
 
 环境变量：
@@ -69,6 +84,21 @@ python3 -m venv .venv
 - `XHS_PORT=8766`：修改端口
 - `XHS_DATA_DIR=~/xhs-data-2`：换一个数据目录（相当于另一个独立的账号和对话记录）
 - `XHS_CLAUDE_PATH=/path/to/claude`：Claude Code 装在不常见的位置时，手动指定路径
+- `XHS_NO_BROWSER=1`：启动时不自动打开浏览器
+
+## 打包和发布
+
+推送 `v*` 标签（版本号要和 `xhs_reader/__init__.py` 里的一致）后，GitHub Actions 会自动打包 macOS 和 Windows 版本、运行冒烟测试，并发布到 Releases。也可以在 Actions 页面手动运行，只打包不发布。
+macOS 签名和公证需要在仓库的 Secrets 里配置 Apple 开发者证书，具体见 [.github/workflows/release.yml](.github/workflows/release.yml) 开头的说明。本地打包：
+
+```bash
+.venv/bin/pip install -r packaging/requirements-build.txt
+.venv/bin/python packaging/gen_licenses.py
+.venv/bin/pyinstaller packaging/xhs-research-agent.spec --noconfirm
+packaging/macos_sign_notarize.sh "dist/XHS Research Agent.app" dist/app.dmg   # macOS
+```
+
+安装包里附带了所有第三方组件的许可证（`THIRD_PARTY_LICENSES.txt`）。
 
 ## 访问频率限制
 

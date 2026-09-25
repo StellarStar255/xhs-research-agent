@@ -94,6 +94,10 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .meta-line { font-size: 12px; color: var(--muted); margin-top: 8px; }
 .gear { margin: 0 12px 12px; border: 0; background: none; color: var(--muted); font-size: 13px; text-align: left; padding: 4px; }
 .gear:hover { color: var(--accent); }
+.foot { display: flex; align-items: center; margin-right: 12px; }
+.foot .gear:first-child { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gear.quit { margin: 0 0 12px; flex-shrink: 0; }
+.bye { text-align: center; margin-top: 30vh; color: var(--muted); }
 .settings h2 { margin: 0 0 14px; font-size: 18px; }
 .settings label.opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line);
                       border-radius: 10px; margin-bottom: 8px; cursor: pointer; }
@@ -184,7 +188,8 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   <div class="login"><span class="dot" id="dot"></span><span id="loginText">检查登录中…</span>
     <button id="loginBtn" data-login hidden>扫码登录</button></div>
   <div class="limits" id="limits"></div>
-  <button class="gear" id="gear">⚙ 设置 · <span id="backendLabel">…</span></button>
+  <div class="foot"><button class="gear" id="gear">⚙ 设置 · <span id="backendLabel">…</span></button>
+    <button class="gear quit" id="quit" title="关闭后台服务">退出</button></div>
 </aside>
 <main>
   <div id="scroll"><div class="thread" id="thread"></div></div>
@@ -247,6 +252,7 @@ $('#chats').onclick = async e => {
 };
 
 let loggedIn = null;  // true / false / null (unknown)
+let loginError = '';  // e.g. Chrome not installed
 function setLogin(ok, nickname) {
   const was = loggedIn;
   loggedIn = ok;
@@ -260,7 +266,11 @@ async function loadStatus(refresh) {
     const s = await api('/api/status' + (refresh ? '?refresh=1' : ''));
     renderLimits(s.limits);
     if (s.busy) { if (loggedIn === null) $('#loginText').textContent = s.limits?.cooldown_until ? '登录状态：冷却中不检查' : '浏览器忙碌中…'; return; }
+    const wasError = loginError;
+    loginError = !s.logged_in && s.error && s.error.includes('Chrome') ? s.error : '';
+    if (loginError !== wasError && current === null && loggedIn === false) newChat();
     setLogin(!!s.logged_in, s.nickname);
+    if (loginError) $('#loginText').textContent = '没有找到 Chrome';
   } catch { $('#loginText').textContent = '状态未知'; }
 }
 
@@ -307,7 +317,9 @@ function newChat() {
       <h2>先登录小红书</h2>
       <p style="margin:0;color:var(--muted);font-size:14px">助手要用你自己的小红书账号去搜索和阅读笔记，需要先登录一次，之后会一直保持登录。</p>
       <ol><li>点下面的按钮，会弹出一个 Chrome 窗口</li><li>打开手机上的小红书 App，扫描窗口里的二维码</li><li>登录成功后这里会自动更新</li></ol>
-      <button class="big-btn" data-login>扫码登录小红书</button>
+      ${loginError ? `<p class="err-text" style="font-size:14px">${esc(loginError)}</p>
+        <button class="big-btn" onclick="loadStatus(true)">我已安装 Chrome，重新检查</button>`
+      : `<button class="big-btn" data-login>扫码登录小红书</button>`}
       <div class="state" id="loginState"></div>
       <div class="note">登录信息只保存在这台电脑的 data/ 目录里。不登录也可以发图片让助手分析，但查不了小红书。</div>
     </div></div>`;
@@ -596,6 +608,11 @@ async function openSettings(message) {
   $('#modal').classList.add('show');
 }
 $('#gear').onclick = () => openSettings();
+$('#quit').onclick = async () => {
+  if (!confirm('退出小红书调研助手？正在进行的调研会被停止。')) return;
+  try { await api('/api/shutdown', {method: 'POST'}); } catch {}
+  document.body.innerHTML = '<div class="bye" style="flex:1"><h2>已退出</h2><p>可以关闭这个页面了。下次双击应用图标即可重新打开。</p></div>';
+};
 
 newChat(); loadStatus();
 loadSettings().then(c => { if (c.backend === 'api' && !c.api.has_key) openSettings('第一次使用：请选择一个大模型服务商并填写 API Key'); });

@@ -40,6 +40,8 @@ _CLAUDE_CANDIDATES = [
     "~/.local/bin/claude", "~/.claude/local/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude",
     "~/.npm-global/bin/claude", "~/.bun/bin/claude", "~/.volta/bin/claude", "~/.yarn/bin/claude",
     "~/.nvm/versions/node/*/bin/claude", "~/Library/pnpm/claude", "~/.local/share/pnpm/claude",
+    # Windows (native installer, npm)
+    "~/.local/bin/claude.exe", "~/AppData/Roaming/npm/claude.cmd", "~/AppData/Local/Programs/claude/claude.exe",
 ]
 
 
@@ -75,9 +77,12 @@ def load():
 
 
 def save(s):
-    DATA_DIR.mkdir(exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(s, ensure_ascii=False, indent=2))
-    SETTINGS_FILE.chmod(0o600)  # holds an API key
+    try:
+        SETTINGS_FILE.chmod(0o600)  # holds an API key (no-op beyond read-only on Windows)
+    except OSError:
+        pass
 
 
 def public(s=None):

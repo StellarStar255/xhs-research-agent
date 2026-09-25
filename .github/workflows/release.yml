@@ -1,0 +1,178 @@
+# Build the macOS (.dmg) and Windows (setup .exe) apps; on a v* tag, publish a GitHub Release.
+#
+#   git tag v0.1.0 && git push origin v0.1.0     -> build, sign/notarize, release
+#   Actions tab -> "Build & Release" -> Run        -> build only (artifacts, no release)
+#
+# macOS signing & notarization use these repository secrets; if they're missing the
+# DMG is still built, ad-hoc signed (users get a Gatekeeper warning):
+#   MACOS_CERT_P12        base64 of the "Developer ID Application" certificate (.p12)
+#   MACOS_CERT_PASSWORD   password of that .p12
+#   MACOS_SIGN_IDENTITY   e.g. "Developer ID Application: Your Name (TEAMID)"
+#   APPLE_ID              Apple ID email used for notarization
+#   APPLE_TEAM_ID         10-character team ID
+#   APPLE_APP_PASSWORD    app-specific password for that Apple ID
+name: Build & Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/__version__ = "\(.*\)"/\1/p' xhs_reader/__init__.py)
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF#refs/tags/v}" != "$VERSION" ]]; then
+            echo "::error::Tag ${GITHUB_REF#refs/tags/} does not match xhs_reader/__init__.py version $VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  macos:
+    needs: version
+    runs-on: macos-latest   # Apple Silicon
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r packaging/requirements-build.txt
+      - name: Third-party licenses
+        run: python packaging/gen_licenses.py
+      - name: Build app
+        run: pyinstaller packaging/xhs-research-agent.spec --noconfirm
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="dist/XHS Research Agent.app/Contents/MacOS"
+          export XHS_DATA_DIR="$RUNNER_TEMP/xhs-data" XHS_NO_BROWSER=1 XHS_PORT=8766
+          "$BIN/xhs-cli" limits
+          "$BIN/xhs-cli" selftest
+          "$BIN/XHS Research Agent" & PID=$!
+          for i in $(seq 1 30); do curl -sf localhost:8766/api/ping && break; sleep 1; done
+          curl -sf localhost:8766/ -o /dev/null
+          curl -sf -X POST localhost:8766/api/shutdown
+          for i in $(seq 1 10); do kill -0 $PID 2>/dev/null || break; sleep 1; done
+          if kill -0 $PID 2>/dev/null; then echo "::error::GUI did not exit after shutdown"; exit 1; fi
+      - name: Import signing certificate
+        if: env.MACOS_CERT_P12 != ''
+        shell: bash
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PW="$(uuidgen)"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PW" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+      - name: Sign, package, notarize
+        shell: bash
+        run: packaging/macos_sign_notarize.sh "dist/XHS Research Agent.app" "dist/XHS-Research-Agent-$VERSION-macos-arm64.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.dmg
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r packaging/requirements-build.txt
+      - name: Third-party licenses
+        run: python packaging/gen_licenses.py
+      - name: Build app
+        run: pyinstaller packaging/xhs-research-agent.spec --noconfirm
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bin = "dist\XHS Research Agent"
+          $env:XHS_DATA_DIR = "$env:RUNNER_TEMP\xhs-data"; $env:XHS_NO_BROWSER = "1"; $env:XHS_PORT = "8766"
+          & "$bin\xhs-cli.exe" limits;   if ($LASTEXITCODE) { throw "limits failed" }
+          & "$bin\xhs-cli.exe" selftest; if ($LASTEXITCODE) { throw "selftest failed" }
+          $p = Start-Process -FilePath "$bin\XHS Research Agent.exe" -PassThru
+          $ok = $false
+          foreach ($i in 1..30) { try { Invoke-RestMethod http://localhost:8766/api/ping | Out-Null; $ok = $true; break } catch { Start-Sleep 1 } }
+          if (-not $ok) { Get-Content "$env:XHS_DATA_DIR\app.log" -ErrorAction SilentlyContinue; throw "GUI did not start" }
+          Invoke-WebRequest http://localhost:8766/ -UseBasicParsing | Out-Null
+          Invoke-RestMethod -Method Post http://localhost:8766/api/shutdown | Out-Null
+          if (-not $p.WaitForExit(15000)) { throw "GUI did not exit after shutdown" }
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DAppVersion=$env:VERSION" packaging\windows_installer.iss
+          if ($LASTEXITCODE) { throw "iscc failed" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*-setup.exe
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNED: ${{ secrets.MACOS_SIGN_IDENTITY != '' }}
+        shell: bash
+        run: |
+          {
+            echo "## 下载"
+            echo
+            echo "- **macOS（Apple 芯片 M1 及以后）**：\`XHS-Research-Agent-*-macos-arm64.dmg\`，打开后把应用拖进「应用程序」"
+            echo "- **Windows 10/11（64 位）**：\`XHS-Research-Agent-*-windows-x64-setup.exe\`"
+            echo
+            echo "需要先安装 [Google Chrome](https://www.google.com/chrome/)（Windows 上没有 Chrome 时会使用系统自带的 Edge）。"
+            echo
+            if [ "$SIGNED" != "true" ]; then
+              echo "> macOS 版这次没有签名：第一次打开时请在「应用程序」里**右键 → 打开**。"
+              echo
+            fi
+            echo "> Windows 版没有代码签名，安装时如果出现「Windows 已保护你的电脑」，点「更多信息 → 仍要运行」。"
+            echo
+            echo "首次使用请阅读 [README](https://github.com/${GITHUB_REPOSITORY}#readme) 里的免责声明。本项目与小红书没有任何关联。"
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" artifacts/* --title "$GITHUB_REF_NAME" --notes-file notes.md

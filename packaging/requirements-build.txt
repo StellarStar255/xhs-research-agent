@@ -1,0 +1,3 @@
+pyinstaller>=6.10
+pip-licenses>=5
+pillow>=10

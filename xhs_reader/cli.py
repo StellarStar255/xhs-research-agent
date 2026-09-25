@@ -88,7 +88,7 @@ def cmd_digest(a):
         print()
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(prog="xhs_reader")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("login")
@@ -114,7 +114,8 @@ def main():
     d.add_argument("--max-comments", type=int, default=10)
     sub.add_parser("list")
     sub.add_parser("limits", help="show cooldown and remaining budget")
-    a = ap.parse_args()
+    sub.add_parser("selftest", help="check the bundled driver can start the local browser (no network)")
+    a = ap.parse_args(argv)
 
     if a.cmd == "login":
         me = scraper.login()
@@ -127,6 +128,11 @@ def main():
         cmd_research(a)
     elif a.cmd == "digest":
         cmd_digest(a)
+    elif a.cmd == "selftest":
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            channel, ua = scraper._pick_browser(p)
+        print(json.dumps({"ok": True, "browser": channel, "user_agent": ua}, ensure_ascii=False))
     elif a.cmd == "limits":
         print(json.dumps(scraper.limits(), ensure_ascii=False))
     elif a.cmd == "list":

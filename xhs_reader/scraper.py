@@ -10,14 +10,13 @@ import random
 import re
 import time
 from contextlib import contextmanager
-from pathlib import Path
 from urllib.parse import quote
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
-ROOT = Path(__file__).resolve().parent.parent
-# XHS_DATA_DIR: separate profile/chats/settings (e.g. a second account, or tests).
-DATA_DIR = Path(os.environ.get("XHS_DATA_DIR") or ROOT / "data").expanduser()
+from . import procutil
+from .paths import DATA_DIR
+
 PROFILE_DIR = DATA_DIR / "profile"
 LOCK_FILE = DATA_DIR / "browser.lock"
 
@@ -109,28 +108,39 @@ def _pause(lo=1.5, hi=3.5):
     time.sleep(random.uniform(lo, hi))
 
 
-def _normal_ua(p):
-    b = p.chromium.launch(channel="chrome", headless=True)
-    ua = b.new_page().evaluate("navigator.userAgent").replace("HeadlessChrome", "Chrome")
-    b.close()
-    return ua
+class NoBrowser(RuntimeError):
+    pass
+
+
+def _pick_browser(p):
+    """(channel, user agent) of an installed Chrome, else Edge (always present on Windows).
+
+    We drive the user's own browser rather than bundling Chromium.
+    """
+    wanted = os.environ.get("XHS_BROWSER_CHANNEL")
+    for channel in [wanted] if wanted else ["chrome", "msedge"]:
+        try:
+            b = p.chromium.launch(channel=channel, headless=True)
+        except PlaywrightError:
+            continue
+        # Headless Chrome advertises "HeadlessChrome" in its UA; look like normal Chrome.
+        ua = b.new_page().evaluate("navigator.userAgent").replace("HeadlessChrome", "Chrome")
+        b.close()
+        return channel, ua
+    raise NoBrowser("没有找到 Google Chrome。请先安装 Chrome（https://www.google.com/chrome/）后再试。")
 
 
 def _lock_holder_alive():
     try:
-        pid = int(LOCK_FILE.read_text().split()[0])
-        os.kill(pid, 0)
-        return True
-    except (FileNotFoundError, ValueError, IndexError, ProcessLookupError):
+        return procutil.pid_alive(int(LOCK_FILE.read_text().split()[0]))
+    except (FileNotFoundError, ValueError, IndexError):
         return False
-    except PermissionError:
-        return True
 
 
 @contextmanager
 def browser(headless=True, wait_s=900):
     """Only one process may use the Chrome profile; wait for our turn."""
-    DATA_DIR.mkdir(exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     deadline = time.time() + wait_s
     while LOCK_FILE.exists() and _lock_holder_alive():
         if time.time() > deadline:
@@ -139,14 +149,14 @@ def browser(headless=True, wait_s=900):
     LOCK_FILE.write_text(f"{os.getpid()} {time.time()}")
     try:
         with sync_playwright() as p:
+            channel, ua = _pick_browser(p)
             ctx = p.chromium.launch_persistent_context(
                 str(PROFILE_DIR),
-                channel="chrome",
+                channel=channel,
                 headless=headless,
                 viewport={"width": 1280, "height": 900},
                 locale="zh-CN",
-                # Headless Chrome advertises "HeadlessChrome" in its UA; look like normal Chrome.
-                user_agent=None if not headless else _normal_ua(p),
+                user_agent=ua if headless else None,
                 args=["--disable-blink-features=AutomationControlled"],
                 ignore_default_args=["--no-sandbox", "--enable-automation"],
             )

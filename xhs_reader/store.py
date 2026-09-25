@@ -2,7 +2,6 @@
 import json
 import re
 import time
-from pathlib import Path
 
 from .scraper import DATA_DIR
 
