@@ -27,8 +27,8 @@ COMMENT_API = "/api/sns/web/v2/comment/page"
 ME_API = "/api/sns/web/v2/user/me"
 
 
-# Pacing & budgets (env-overridable). The site rate-limits note-detail page
-# views (error 300013 "访问频繁"); ~100 views in 40 min was enough to trip it.
+# Pacing & budgets (env-overridable). Viewing too many notes in a short time
+# gets the account rate-limited by the site (error 300013 "访问频繁").
 NOTE_DELAY = (float(os.environ.get("XHS_DELAY_MIN", 6)), float(os.environ.get("XHS_DELAY_MAX", 12)))
 HOURLY_CAP = int(os.environ.get("XHS_HOURLY_CAP", 40))
 DAILY_CAP = int(os.environ.get("XHS_DAILY_CAP", 150))
