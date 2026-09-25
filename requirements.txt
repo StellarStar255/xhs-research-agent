@@ -1,0 +1,6 @@
+playwright>=1.49
+fastapi>=0.115
+uvicorn>=0.30
+markdown>=3.6
+pydantic>=2
+openai>=1.40
