@@ -31,8 +31,10 @@ datas = [
 binaries = [(str(node), "playwright/driver")]
 hidden = collect_submodules("uvicorn") + collect_submodules("xhs_reader")
 
+if WIN:
+    hidden += ["pystray._win32", "PIL.Image"]  # tray icon (xhs_reader.app.WinTray)
 common = dict(pathex=[str(ROOT)], binaries=binaries, datas=datas, hiddenimports=hidden,
-              excludes=["tkinter", "matplotlib", "numpy", "PIL", "IPython"])
+              excludes=["tkinter", "matplotlib", "numpy", "IPython"] + ([] if WIN else ["PIL", "pystray"]))
 gui_a = Analysis([str(ROOT / "packaging" / "entry_gui.py")], **common)
 cli_a = Analysis([str(ROOT / "packaging" / "entry_cli.py")], **common)
 

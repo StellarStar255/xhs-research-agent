@@ -229,6 +229,63 @@ class MacShell:
             time.sleep(1.5)
 
 
+class WinTray:
+    """Windows notification-area ("tray") icon, so the app can keep running with its window
+    closed: browser mode shows no window at all, and in window mode closing the window
+    hides it here. Menu: status, 打开页面 / 显示窗口 / 设置, 退出; left-click = default."""
+
+    def __init__(self, actions, running_count):
+        import pystray
+        from PIL import Image
+
+        self.running_count, self.notified = running_count, False
+        M = pystray.MenuItem
+        menu = pystray.Menu(
+            M(lambda item: self._status(), None, enabled=False),
+            pystray.Menu.SEPARATOR,
+            M("打开", lambda: actions["default"](), default=True, visible=False),
+            M("打开页面", lambda: actions["open"]()),
+            M("显示窗口", lambda: actions["window"]()),
+            M("设置 / 检查更新…", lambda: actions["settings"]()),
+            pystray.Menu.SEPARATOR,
+            M("退出小红书调研助手", lambda: actions["quit"]()),
+        )
+        self.icon = pystray.Icon("xhs-research-agent", Image.open(ICON), "小红书调研助手", menu)
+        self.icon.run_detached()
+        threading.Thread(target=self._status_loop, daemon=True).start()
+
+    def _status(self):
+        n = self.running_count()
+        return f"正在调研（{n} 个）" if n else "空闲"
+
+    def _status_loop(self):
+        last = None
+        while True:
+            try:
+                n = self.running_count()
+            except Exception:
+                n = 0
+            if n != last:
+                last = n
+                self.icon.title = f"小红书调研助手 · 正在调研（{n} 个）" if n else "小红书调研助手"
+                self.icon.update_menu()
+            time.sleep(2)
+
+    def notify_hidden(self):
+        if not self.notified:
+            self.notified = True
+            try:
+                self.icon.notify("已最小化到托盘。点图标可以重新打开，右键可以退出。", "小红书调研助手")
+            except Exception:
+                pass
+
+    def stop(self):
+        try:
+            self.icon.stop()
+        except Exception:
+            pass
+
+
 def _run_window(url, port):
     """Run as a native app: Dock/taskbar icon and app menu, with the UI either in its own
     window or in the browser (settings "ui"). Blocks until the app quits. Returns False
@@ -259,9 +316,10 @@ def _run_window(url, port):
             window.restore()
 
     def tuck_away():
-        # In browser mode the window stays alive (it's what keeps the Dock/taskbar icon
-        # and menu), just out of the way: hidden on macOS, minimized elsewhere.
-        window.hide() if MAC else window.minimize()
+        # In browser mode the window stays alive (it keeps the app running and owns the menu),
+        # just out of the way: hidden when a menu-bar/tray icon keeps the app reachable
+        # (macOS, Windows with tray), minimized otherwise.
+        window.hide() if (MAC or tray) else window.minimize()
 
     def set_ui(mode):
         state["mode"] = mode
@@ -314,10 +372,38 @@ def _run_window(url, port):
         MenuAction("在浏览器中打开", lambda: webbrowser.open(url)),
         MenuAction("打开数据文件夹", open_data_dir),
     ])]
+    def quit_now():
+        # Real quit: set the flag first, because destroying the window fires `closing`,
+        # which otherwise hides to the tray on Windows.
+        state["quitting"] = True
+        if tray:
+            tray.stop()
+        window.destroy()
+
+    def tray_quit():
+        running = any(c["running"] for c in agent.list_chats())
+        if running and not window.create_confirmation_dialog("还有调研正在进行", "退出会停止它。确定要退出吗？"):
+            return
+        state["quitting"] = True
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    tray = None
+    if WINDOWS:
+        try:
+            tray = WinTray({
+                "default": lambda: show_window() if state["mode"] == "window" else webbrowser.open(url),
+                "open": lambda: webbrowser.open(url),
+                "window": show_window,
+                "settings": open_settings,
+                "quit": tray_quit,
+            }, lambda: sum(c["running"] for c in agent.list_chats()))
+        except Exception:
+            logging.exception("tray icon unavailable; closing the window will quit")
+
     browser_mode = state["mode"] == "browser"
     window = webview.create_window(
         "小红书调研助手", html=LOADING, width=1240, height=840, min_size=(860, 600),
-        hidden=browser_mode and MAC, minimized=browser_mode and not MAC,
+        hidden=browser_mode and bool(MAC or tray), minimized=browser_mode and not (MAC or tray),
         text_select=True,  # pywebview disables selection by default; answers must be copyable
         menu=menu, background_color="#f7f6f4",
         localization={"global.quitConfirmation": "还有调研正在进行，退出会停止它。确定要退出吗？",
@@ -325,11 +411,15 @@ def _run_window(url, port):
     )
 
     def on_closing():
+        if tray and not state.get("quitting"):
+            window.hide()  # Windows: closing the window keeps the app running in the tray
+            tray.notify_hidden()
+            return False
         # Ask only when something is running (pywebview then shows its own dialog).
-        window.confirm_close = any(c["running"] for c in agent.list_chats())
+        window.confirm_close = any(c["running"] for c in agent.list_chats()) and not state.get("quitting")
 
     window.events.closing += on_closing
-    server.on_shutdown = window.destroy  # the page's 退出 button quits the app too
+    server.on_shutdown = quit_now  # the page's 退出 button (and tray 退出) quit the app
     server.set_ui = set_ui
 
     def load_when_ready():

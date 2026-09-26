@@ -141,6 +141,10 @@ jobs:
           Start-Sleep 15
           if ($p.HasExited) { Get-Content "$env:XHS_DATA_DIR\app.log" -ErrorAction SilentlyContinue; throw "GUI with window exited (code $($p.ExitCode))" }
           Invoke-RestMethod http://localhost:8766/api/ping | Out-Null
+          # The tray icon must have come up (closing the window hides to it), and a real quit
+          # must still exit rather than being turned into "hide to tray".
+          if (Select-String -Path "$env:XHS_DATA_DIR\app.log" -Pattern "tray icon unavailable" -Quiet) {
+            Get-Content "$env:XHS_DATA_DIR\app.log"; throw "tray icon failed to start" }
           Invoke-RestMethod -Method Post http://localhost:8766/api/shutdown | Out-Null
           if (-not $p.WaitForExit(15000)) { throw "GUI with window did not exit after shutdown" }
       - name: Build installer

@@ -7,3 +7,5 @@ openai>=1.40
 psutil>=5.9
 pywebview>=5
 truststore>=0.9
+pystray>=0.19; sys_platform == "win32"
+pillow>=10; sys_platform == "win32"
