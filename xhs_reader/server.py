@@ -70,6 +70,11 @@ def index():
     return FileResponse(Path(__file__).parent / "static" / "index.html")
 
 
+@app.get("/icon.png")
+def icon():
+    return FileResponse(Path(__file__).parent / "static" / "icon.png")
+
+
 @app.get("/api/chats")
 def chats():
     return agent.list_chats()
@@ -250,6 +255,28 @@ def ping():
 
 server = None       # the uvicorn.Server, set by xhs_reader.app
 on_shutdown = None  # e.g. closes the native window
+set_ui = None       # set by xhs_reader.app when running with a native shell: set_ui("window"|"browser")
+
+
+class UiReq(BaseModel):
+    mode: str
+
+
+@app.get("/api/ui")
+def get_ui():
+    return {"native": set_ui is not None, "mode": settings.load()["ui"]}
+
+
+@app.post("/api/ui")
+def post_ui(req: UiReq):
+    if req.mode not in ("window", "browser"):
+        raise HTTPException(400, "未知的打开方式")
+    s = settings.load()
+    s["ui"] = req.mode
+    settings.save(s)
+    if set_ui:
+        set_ui(req.mode)
+    return get_ui()
 
 
 @app.post("/api/shutdown")

@@ -69,6 +69,7 @@ def load():
     except (FileNotFoundError, ValueError):
         s = {}
     s.setdefault("backend", "claude" if claude_available() else "api")
+    s.setdefault("ui", "window")  # packaged app: "window" (own window) or "browser"
     api = s.setdefault("api", {})
     if not api.get("provider"):
         api.update(provider="deepseek", base_url=PROVIDERS[0]["base_url"], model=PROVIDERS[0]["model"])
@@ -92,7 +93,8 @@ def public(s=None):
     key = api.pop("api_key", "")
     api["has_key"] = bool(key)
     api["key_hint"] = f"{key[:3]}…{key[-4:]}" if len(key) > 10 else ("已填写" if key else "")
-    return {"backend": s["backend"], "api": api, "claude_available": claude_available(), "providers": PROVIDERS}
+    return {"backend": s["backend"], "ui": s["ui"], "api": api, "claude_available": claude_available(),
+            "providers": PROVIDERS}
 
 
 def api_ready(s=None):

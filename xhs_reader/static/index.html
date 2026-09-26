@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>小红书调研助手</title>
+<link rel="icon" href="/icon.png">
 <style>
 :root {
   --bg: #f7f6f4; --panel: #ffffff; --side: #efeeeb; --ink: #1d1d1f; --muted: #7a7a80; --line: #e5e3df;
@@ -99,6 +100,9 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .gear.quit { margin: 0 0 12px; flex-shrink: 0; }
 .bye { text-align: center; margin-top: 30vh; color: var(--muted); }
 .settings h2 { margin: 0 0 14px; font-size: 18px; }
+.settings h3 { margin: 18px 0 8px; font-size: 14px; color: var(--muted); font-weight: 600; }
+.settings .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.settings .seg label.opt { margin: 0; }
 .settings label.opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line);
                       border-radius: 10px; margin-bottom: 8px; cursor: pointer; }
 .settings label.opt.on { border-color: var(--accent); }
@@ -552,10 +556,18 @@ function showProviderNote() {
 async function openSettings(message) {
   await loadSettings();
   const a = conf.api;
+  const ui = await api('/api/ui').catch(() => ({native: false}));
   $('#sheet').innerHTML = `<div class="settings">
     <button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button>
-    <h2>回答问题用的大模型</h2>
+    <h2>设置</h2>
     ${message ? `<p class="err-text" style="font-size:13px">${esc(message)}</p>` : ''}
+    ${ui.native ? `<h3>打开方式</h3><div class="seg">
+      <label class="opt ${ui.mode === 'window' ? 'on' : ''}"><input type="radio" name="uimode" value="window" ${ui.mode === 'window' ? 'checked' : ''}>
+        <div>独立窗口<small>像普通软件一样，有自己的窗口</small></div></label>
+      <label class="opt ${ui.mode === 'browser' ? 'on' : ''}"><input type="radio" name="uimode" value="browser" ${ui.mode === 'browser' ? 'checked' : ''}>
+        <div>浏览器<small>在你的浏览器里打开；点 Dock 图标可以再次打开页面</small></div></label>
+    </div>` : ''}
+    <h3>回答问题用的大模型</h3>
     <label class="opt ${conf.claude_available ? '' : 'disabled'}"><input type="radio" name="backend" value="claude" ${conf.backend === 'claude' ? 'checked' : ''} ${conf.claude_available ? '' : 'disabled'}>
       <div>Claude Code<small>${conf.claude_available ? '使用本机已登录的 Claude Code（需要 Claude 订阅）' : '这台电脑没有安装 Claude Code'}</small></div></label>
     <label class="opt"><input type="radio" name="backend" value="api" ${conf.backend === 'api' ? 'checked' : ''}>
@@ -577,9 +589,14 @@ async function openSettings(message) {
   const sync = () => {
     const b = document.querySelector('input[name=backend]:checked')?.value;
     $('#sApi').hidden = b !== 'api'; $('#sTest').hidden = b !== 'api';
-    document.querySelectorAll('.settings label.opt').forEach(l => l.classList.toggle('on', l.querySelector('input').checked));
+    document.querySelectorAll('.settings label.opt').forEach(l => { const i = l.querySelector('input[name=backend]'); if (i) l.classList.toggle('on', i.checked); });
   };
   document.querySelectorAll('input[name=backend]').forEach(r => r.onchange = sync);
+  document.querySelectorAll('input[name=uimode]').forEach(r => r.onchange = async () => {
+    document.querySelectorAll('input[name=uimode]').forEach(x => x.closest('label').classList.toggle('on', x.checked));
+    try { await api('/api/ui', {method: 'POST', body: JSON.stringify({mode: r.value})}); out('打开方式已切换，下次启动也会用这个方式', true); }
+    catch (e) { out(e.message, false); }
+  });
   $('#sProvider').onchange = () => {
     const p = conf.providers.find(p => p.id === $('#sProvider').value);
     if (p.id !== 'custom') { $('#sBase').value = p.base_url; $('#sModel').value = p.model; }
@@ -615,7 +632,10 @@ $('#quit').onclick = async () => {
 };
 
 newChat(); loadStatus();
-loadSettings().then(c => { if (c.backend === 'api' && !c.api.has_key) openSettings('第一次使用：请选择一个大模型服务商并填写 API Key'); });
+loadSettings().then(c => {
+  if (c.backend === 'api' && !c.api.has_key) openSettings('第一次使用：请选择一个大模型服务商并填写 API Key');
+  else if (location.hash === '#settings') { history.replaceState(null, '', '/'); openSettings(); }
+});
 </script>
 </body>
 </html>
