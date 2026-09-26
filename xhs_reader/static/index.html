@@ -98,6 +98,16 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .foot { display: flex; align-items: center; margin-right: 12px; }
 .foot .gear:first-child { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gear.quit { margin: 0 0 12px; flex-shrink: 0; }
+.upd { margin: 0 12px 10px; padding: 8px 12px; border-radius: 10px; background: var(--accent-soft); color: var(--accent);
+       font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+.upd[hidden] { display: none; }
+.upd b { margin-left: auto; font-weight: 600; }
+.settings .ver { display: flex; align-items: center; gap: 10px; font-size: 14px; flex-wrap: wrap; }
+.settings .notes { max-height: 180px; overflow-y: auto; font-size: 13px; border: 1px solid var(--line); border-radius: 8px;
+                   padding: 8px 12px; margin-top: 8px; background: var(--bg); }
+.settings .notes h2 { font-size: 14px; margin: 8px 0 4px; }
+.bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 8px; }
+.bar i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
 .bye { text-align: center; margin-top: 30vh; color: var(--muted); }
 .settings h2 { margin: 0 0 14px; font-size: 18px; }
 .settings h3 { margin: 18px 0 8px; font-size: 14px; color: var(--muted); font-weight: 600; }
@@ -187,6 +197,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 <body>
 <aside>
   <div class="brand"><img src="/icon.png" alt=""> 小红书调研助手</div>
+  <div class="upd" id="updBanner" hidden>⬆ 新版本 <span id="updVer"></span> 可用<b>更新</b></div>
   <button class="new" id="newChat">＋ 新对话</button>
   <div class="chats" id="chats"></div>
   <div class="login"><span class="dot" id="dot"></span><span id="loginText">检查登录中…</span>
@@ -583,6 +594,7 @@ async function openSettings(message) {
         <button class="btn" id="sFetch">获取模型列表</button></div><datalist id="sModels"></datalist></div>
       <div class="note">API Key 只保存在本机的 data/settings.json 里。要分析图片，需要选支持看图的模型。</div>
     </div>
+    <h3>版本</h3><div id="sUpdate"></div>
     <div class="actions"><span class="msg-out" id="sOut"></span>
       <button class="btn" id="sTest">测试连接</button><button class="btn primary" id="sSave">保存</button></div>
   </div>`;
@@ -622,9 +634,53 @@ async function openSettings(message) {
     setTimeout(() => $('#modal').classList.remove('show'), 700);
   });
   showProviderNote(); sync();
+  renderUpdate();
   $('#modal').classList.add('show');
 }
 $('#gear').onclick = () => openSettings();
+
+/* ---------- updates ---------- */
+let upd = null, updPoll = null;
+const UPD_TEXT = {checking: '正在检查…', downloading: '正在下载', verifying: '正在校验签名和文件…',
+                  installing: '准备完成，应用即将重启并完成更新…'};
+async function loadUpdate() {
+  try { upd = await api('/api/update'); } catch { return; }
+  $('#updBanner').hidden = !(upd.supported && upd.available);
+  $('#updVer').textContent = upd.latest ? 'v' + upd.latest : '';
+  renderUpdate();
+  const busy = ['checking', 'downloading', 'verifying', 'installing'].includes(upd.phase);
+  clearTimeout(updPoll);
+  updPoll = setTimeout(loadUpdate, busy ? 800 : 60000);
+}
+function renderUpdate() {
+  const el = document.getElementById('sUpdate');
+  if (!el || !upd) return;
+  if (!upd.supported) { el.innerHTML = `<div class="ver">当前版本 v${esc(upd.current)}<span class="note">源码运行时请用 git pull 更新</span></div>`; return; }
+  const busy = ['checking', 'downloading', 'verifying', 'installing'].includes(upd.phase);
+  let html = `<div class="ver">当前版本 v${esc(upd.current)}`;
+  if (upd.available) html += ` → <b>新版本 v${esc(upd.latest)}</b>`;
+  else if (upd.latest && !upd.error) html += `<span class="ok-text">已是最新版本</span>`;
+  html += `<span style="margin-left:auto"></span>`;
+  if (upd.available) html += `<button class="btn primary" id="uGo" ${busy ? 'disabled' : ''}>立即更新</button>`;
+  else html += `<button class="btn" id="uCheck" ${busy ? 'disabled' : ''}>检查更新</button>`;
+  html += `</div>`;
+  if (busy) html += `<div class="note" style="margin-top:8px">${UPD_TEXT[upd.phase]}${upd.phase === 'downloading' ? ` ${upd.progress}%` : ''}</div>
+    ${upd.phase === 'downloading' ? `<div class="bar"><i style="width:${upd.progress}%"></i></div>` : ''}`;
+  if (upd.phase === 'manual') html += `<p class="note">已打开新版本的安装包：请把应用拖进「应用程序」替换旧版本，然后重新打开。</p>`;
+  if (upd.error) html += `<p class="err-text" style="font-size:13px">${esc(upd.error)}</p>`;
+  if (upd.available && upd.notes_html) html += `<div class="notes md">${upd.notes_html}</div>`;
+  el.innerHTML = html;
+  const go = document.getElementById('uGo'), ck = document.getElementById('uCheck');
+  if (ck) ck.onclick = async () => { upd.phase = 'checking'; renderUpdate(); await api('/api/update/check', {method: 'POST'}); loadUpdate(); };
+  if (go) go.onclick = async () => {
+    if (running && !confirm('还有调研正在进行，更新会停止它。继续吗？')) return;
+    try { await api('/api/update/start', {method: 'POST'}); } catch (e) { alert(e.message); }
+    loadUpdate();
+  };
+  document.querySelectorAll('#sUpdate .md a').forEach(a => { a.target = '_blank'; a.rel = 'noopener'; });
+}
+$('#updBanner').onclick = () => openSettings();
+loadUpdate();
 $('#quit').onclick = async () => {
   if (!confirm('退出小红书调研助手？正在进行的调研会被停止。')) return;
   try { await api('/api/shutdown', {method: 'POST'}); } catch {}

@@ -153,6 +153,8 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Checksums (verified by the in-app updater)
+        run: cd artifacts && sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}

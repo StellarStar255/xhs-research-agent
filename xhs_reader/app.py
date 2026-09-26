@@ -129,7 +129,7 @@ class MacShell:
         self.status_line = menu.addItemWithTitle_action_keyEquivalent_("空闲", None, "")
         self.status_line.setEnabled_(False)
         menu.addItem_(AK.NSMenuItem.separatorItem())
-        for title, key in [("打开页面", "open"), ("切换为独立窗口", "window"), ("设置…", "settings"),
+        for title, key in [("打开页面", "open"), ("切换为独立窗口", "window"), ("设置 / 检查更新…", "settings"),
                            (None, None), ("退出小红书调研助手", "quit")]:
             if title is None:
                 menu.addItem_(AK.NSMenuItem.separatorItem())
@@ -275,6 +275,7 @@ def _run_window(url, port):
         MenuAction("新对话", js("newChat()")),
         MenuAction("设置…", js("openSettings()")),
         MenuAction("扫码登录小红书…", js("startLogin()")),
+        MenuAction("检查更新…", js("openSettings()")),
         MenuSeparator(),
         MenuAction("切换为独立窗口", lambda: switch_mode("window")),
         MenuAction("切换为浏览器", lambda: switch_mode("browser")),
@@ -334,6 +335,8 @@ def serve():
     from . import agent, server
 
     agent.recover()
+    from . import updater
+    updater.check_periodically()
     config = uvicorn.Config(server.app, host="127.0.0.1", port=port, log_level="warning",
                             log_config=None if paths.FROZEN else uvicorn.config.LOGGING_CONFIG)
     server.server = uvicorn.Server(config)

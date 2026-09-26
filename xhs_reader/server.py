@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import agent, paths, procutil, scraper, settings, store
+from . import agent, paths, procutil, scraper, settings, store, updater
 app = FastAPI()
 _status = {"at": 0, "value": None}
 _login = {"proc": None, "state": "idle", "message": ""}
@@ -260,6 +260,29 @@ set_ui = None       # set by xhs_reader.app when running with a native shell: se
 
 class UiReq(BaseModel):
     mode: str
+
+
+@app.get("/api/update")
+def update_status():
+    st = updater.status()
+    st["notes_html"] = _md(st["notes"]) if st.get("notes") else ""
+    return st
+
+
+@app.post("/api/update/check")
+def update_check():
+    updater.check()
+    return update_status()
+
+
+@app.post("/api/update/start")
+def update_start():
+    """Download, verify, then quit so the helper can install and relaunch."""
+    try:
+        updater.start(on_ready_to_quit=lambda: (time.sleep(1.5), shutdown()))
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    return update_status()
 
 
 @app.get("/api/ui")

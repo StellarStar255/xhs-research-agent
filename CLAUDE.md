@@ -19,6 +19,10 @@ Packaging: packaging/*.spec (PyInstaller, two exes: windowed GUI + console `xhs-
 packaging/macos_sign_notarize.sh, packaging/windows_installer.iss, .github/workflows/release.yml.
 Paths/child processes go through xhs_reader/paths.py and procutil.py (cross-platform; never
 os.kill(pid, 0) — it kills on Windows). Packaged data dir: ~/.xhs-research-agent.
+Updates: xhs_reader/updater.py checks GitHub releases/latest (XHS_UPDATE_API overrides, for tests),
+verifies (macOS: TeamIdentifier 3QCL9WNFBB; SHA256SUMS.txt from the release) and hands off to a
+detached helper that swaps the app after it quits. Release assets must keep their names
+(`*-macos-arm64.dmg`, `*-windows-x64-setup.exe`, `SHA256SUMS.txt`) or old versions can't update.
 
 ## When the user asks *this* Claude Code session to research
 
