@@ -130,6 +130,15 @@ jobs:
           Invoke-WebRequest http://localhost:8766/ -UseBasicParsing | Out-Null
           Invoke-RestMethod -Method Post http://localhost:8766/api/shutdown | Out-Null
           if (-not $p.WaitForExit(15000)) { throw "GUI did not exit after shutdown" }
+          # Again as a double-click would: with the native window (a bad window icon used
+          # to crash it right after startup, which the headless run above can't see).
+          Remove-Item Env:XHS_NO_BROWSER
+          $p = Start-Process -FilePath "$bin\XHS Research Agent.exe" -PassThru
+          Start-Sleep 15
+          if ($p.HasExited) { Get-Content "$env:XHS_DATA_DIR\app.log" -ErrorAction SilentlyContinue; throw "GUI with window exited (code $($p.ExitCode))" }
+          Invoke-RestMethod http://localhost:8766/api/ping | Out-Null
+          Invoke-RestMethod -Method Post http://localhost:8766/api/shutdown | Out-Null
+          if (-not $p.WaitForExit(15000)) { throw "GUI with window did not exit after shutdown" }
       - name: Build installer
         shell: pwsh
         run: |

@@ -343,9 +343,13 @@ def _run_window(url, port):
             window.load_html("<p style='font-family:sans-serif;padding:40px'>启动失败，请查看数据文件夹里的 app.log。</p>")
             show_window()
 
+    # Windows: no icon. pywebview loads it with System.Drawing.Icon, which only takes .ico
+    # and throws on our PNG on the GUI thread, killing the process (0xE0434352) where the
+    # except below can't catch it. Without one it uses the exe's own (icon.ico) icon.
+    icon = str(ICON) if ICON.exists() and not WINDOWS else None
     try:
         webview.start(load_when_ready, private_mode=False, storage_path=str(paths.DATA_DIR / "webview"),
-                      icon=str(ICON) if ICON.exists() else None)
+                      icon=icon)
     except Exception:
         logging.exception("native window failed; falling back to the browser")
         server.set_ui = None
