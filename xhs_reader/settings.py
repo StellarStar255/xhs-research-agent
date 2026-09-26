@@ -7,7 +7,9 @@ backend "api":    any OpenAI-compatible chat API (DeepSeek, 通义千问, Kimi, 
 import glob
 import json
 import os
+import re
 import shutil
+import subprocess
 from pathlib import Path
 
 from .scraper import DATA_DIR
@@ -45,18 +47,36 @@ _CLAUDE_CANDIDATES = [
 ]
 
 
+_found_claude = []  # cache: [path or None]
+
+
+def _claude_version(path):
+    try:
+        out = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=15).stdout
+        return tuple(int(x) for x in re.findall(r"\d+", out)[:3])
+    except Exception:
+        return ()
+
+
 def find_claude():
-    """Path to this machine's Claude Code CLI, or None."""
+    """Path to this machine's Claude Code CLI, or None. With several installs (say an old
+    native install in ~/.local/bin and a newer Homebrew one), use the newest version."""
     if os.environ.get("XHS_CLAUDE_PATH"):
         return os.environ["XHS_CLAUDE_PATH"]
-    found = shutil.which("claude")
-    if found:
-        return found
+    if _found_claude:
+        return _found_claude[0]
+    paths_ = [shutil.which("claude")]
     for pattern in _CLAUDE_CANDIDATES:
-        for f in sorted(glob.glob(os.path.expanduser(pattern)), reverse=True):  # newest nvm version first
-            if os.access(f, os.X_OK) and Path(f).is_file():
-                return f
-    return None
+        paths_ += glob.glob(os.path.expanduser(pattern))
+    seen, found = set(), []
+    for f in filter(None, paths_):
+        real = os.path.realpath(f)
+        if real not in seen and os.access(f, os.X_OK) and Path(f).is_file():
+            seen.add(real)
+            found.append(f)
+    best = max(found, key=_claude_version) if len(found) > 1 else (found[0] if found else None)
+    _found_claude.append(best)
+    return best
 
 
 def claude_available():

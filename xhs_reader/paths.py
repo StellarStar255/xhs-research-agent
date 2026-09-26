@@ -55,9 +55,35 @@ def cli_command(*args):
     return [sys.executable, "-m", "xhs_reader.cli", *args]
 
 
+def _system_proxy_env():
+    """HTTP(S)_PROXY from the OS proxy settings, when none are set in the environment.
+
+    An app launched from Finder/Explorer doesn't get a terminal's proxy variables, and
+    Claude Code (Node) ignores the system proxy, so where Anthropic is only reachable
+    through a proxy it failed with "403 Request not allowed". urllib reads the macOS /
+    Windows system proxy for us.
+    """
+    if any(k.lower() in ("http_proxy", "https_proxy", "all_proxy") for k in os.environ):
+        return {}
+    try:
+        import urllib.request
+        sys_proxies = urllib.request.getproxies()
+    except Exception:
+        return {}
+    env = {}
+    for scheme in ("http", "https"):
+        if sys_proxies.get(scheme):
+            env[f"{scheme.upper()}_PROXY"] = env[f"{scheme}_proxy"] = sys_proxies[scheme]
+    if env:
+        bypass = ",".join(filter(None, ["localhost,127.0.0.1,::1", sys_proxies.get("no")]))
+        env["NO_PROXY"] = env["no_proxy"] = bypass
+    return env
+
+
 def child_env(extra=None):
-    """Environment for child processes: same data dir, UTF-8 output on every OS."""
+    """Environment for child processes: same data dir, UTF-8 output, system proxy."""
     env = {**os.environ, "XHS_DATA_DIR": str(DATA_DIR), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    env.update(_system_proxy_env())
     if not FROZEN:  # children run with cwd=DATA_DIR; keep the package importable
         env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), os.environ.get("PYTHONPATH")]))
     env.update(extra or {})

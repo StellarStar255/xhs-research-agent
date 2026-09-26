@@ -305,6 +305,10 @@ def _result_text(block):
 def claude_error(kind, text):
     """Readable message for Claude Code's own failures (not logged in, quota…)."""
     low = f"{kind} {text}".lower()
+    if any(k in low for k in ("403", "request not allowed", "unsupported_country", "not available in your",
+                              "econnrefused", "etimedout", "enotfound", "network", "fetch failed")):
+        return (f"连不上 Claude 的服务（{text.strip()[:80]}）。如果你平时要通过代理才能使用 Claude，"
+                "请确认代理软件已开启，并打开了「系统代理」；也可以在左下角「设置」里改用大模型 API。")
     if any(k in low for k in ("authentication", "not logged in", "/login", "invalid api key", "oauth")):
         return ("这台电脑上的 Claude Code 还没有登录（或登录已过期）。请打开终端运行 `claude`，按提示登录后再试；"
                 "也可以在左下角「设置」里改用大模型 API。")

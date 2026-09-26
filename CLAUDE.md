@@ -19,6 +19,10 @@ Packaging: packaging/*.spec (PyInstaller, two exes: windowed GUI + console `xhs-
 packaging/macos_sign_notarize.sh, packaging/windows_installer.iss, .github/workflows/release.yml.
 Paths/child processes go through xhs_reader/paths.py and procutil.py (cross-platform; never
 os.kill(pid, 0) — it kills on Windows). Packaged data dir: ~/.xhs-research-agent.
+Apps launched from Finder/Explorer get a bare environment: paths.child_env() passes the OS
+system proxy as HTTP(S)_PROXY (Claude Code ignores the system proxy; without it Anthropic
+answers 403 "Request not allowed" where it needs a proxy), and settings.find_claude() picks the
+newest of several Claude Code installs (e.g. old ~/.local/bin vs Homebrew).
 Updates: xhs_reader/updater.py checks GitHub releases/latest (XHS_UPDATE_API overrides, for tests),
 verifies (macOS: TeamIdentifier 3QCL9WNFBB; SHA256SUMS.txt from the release) and hands off to a
 detached helper that swaps the app after it quits. Release assets must keep their names
