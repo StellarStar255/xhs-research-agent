@@ -93,7 +93,6 @@ python3 -m venv .venv
 
 - `XHS_AGENT_MODEL=sonnet`：让回答更快
 - `XHS_PORT=8766`：修改端口
-- `XHS_DATA_DIR=~/xhs-data-2`：换一个数据目录（相当于另一个独立的账号和对话记录）
 - `XHS_CLAUDE_PATH=/path/to/claude`、`XHS_CODEX_PATH=/path/to/codex`：Claude Code / Codex 装在不常见的位置时，手动指定路径
 - `XHS_UI=browser`：完全不启用原生外壳（没有窗口、Dock 图标和菜单栏图标），只在浏览器里打开
 - `XHS_NO_BROWSER=1`：只启动后台服务，不打开窗口或浏览器
@@ -121,6 +120,9 @@ packaging/macos_sign_notarize.sh "dist/XHS Research Agent.app" dist/app.dmg   # 
 - **放慢节奏**：每两篇笔记之间都会停顿一段时间
 - **自动停止**：如果小红书提示访问过于频繁，会立即停止，并在 3 小时内不再访问
 - 同一时间只有一个浏览器实例在运行
+- 这些上限是固定的，不提供调高的设置
+
+「设置 → 抓取方式」里可以选择「显示浏览器窗口」，抓取时会显示 Chrome 窗口，能看到助手的每一步操作。
 
 `./xhs limits` 可以查看剩余额度和暂停状态。
 

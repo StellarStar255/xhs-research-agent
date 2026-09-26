@@ -8,7 +8,6 @@ import json
 import os
 import random
 import re
-import sys
 import time
 from contextlib import contextmanager
 from urllib.parse import quote
@@ -29,10 +28,10 @@ ME_API = "/api/sns/web/v2/user/me"
 
 # Pacing & budgets (env-overridable). Viewing too many notes in a short time
 # gets the account rate-limited by the site (error 300013 "访问频繁").
-NOTE_DELAY = (float(os.environ.get("XHS_DELAY_MIN", 6)), float(os.environ.get("XHS_DELAY_MAX", 12)))
-HOURLY_CAP = int(os.environ.get("XHS_HOURLY_CAP", 40))
-DAILY_CAP = int(os.environ.get("XHS_DAILY_CAP", 150))
-COOLDOWN_H = float(os.environ.get("XHS_COOLDOWN_HOURS", 3))
+NOTE_DELAY = (6, 12)   # seconds between notes
+HOURLY_CAP = 40
+DAILY_CAP = 150
+COOLDOWN_H = 3         # hours to pause after the site says we're too frequent
 USAGE_FILE = DATA_DIR / "usage.json"        # timestamps of note-detail views
 COOLDOWN_FILE = DATA_DIR / "cooldown.json"  # {"until": ts, "reason": ...}
 
@@ -101,8 +100,8 @@ def _check_blocked(page):
             text = ""
         blocked = any(k in text for k in ("访问频繁", "安全限制", "300013", "请完成验证", "滑块"))
     if blocked:
-        until = _start_cooldown("小红书风控：访问频繁 (300013)")
-        raise Limited(f"触发了小红书风控（访问频繁），已自动暂停抓取到 {_hm(until)}。")
+        until = _start_cooldown("小红书提示访问过于频繁 (300013)")
+        raise Limited(f"小红书提示访问过于频繁，已暂停抓取，{_hm(until)} 之后再试。")
 
 
 def _pause(lo=1.5, hi=3.5):
@@ -139,25 +138,19 @@ def _lock_holder_alive():
         return False
 
 
-OFFSCREEN = (-32000, -32000)  # Windows lets windows sit far off-screen
-
-
 @contextmanager
 def browser(headless=True, wait_s=900):
     """Only one process may use the Chrome profile; wait for our turn.
 
-    headless=True runs per the "browser_window" setting: "background" is real headless
-    Chrome; "offscreen" is a normal Chrome window (user agent plain "Chrome" because it is
-    plain Chrome, not because we rewrite it) — off-screen on Windows, visible on macOS,
-    which clamps windows onto a display and ignores minimize/hide for automated Chrome.
+    headless=True runs per the "browser_window" setting: "background" is headless Chrome;
+    "visible" shows a normal Chrome window on screen so the user can watch each step.
+    Either way the site sees an automated browser; when it rate-limits us we stop and
+    cool down rather than trying another way in.
     """
     from . import settings
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    args = []
-    if headless and settings.load().get("browser_window") == "offscreen":
+    if headless and settings.load().get("browser_window") == "visible":
         headless = False
-        if sys.platform == "win32":
-            args = [f"--window-position={OFFSCREEN[0]},{OFFSCREEN[1]}"]
     deadline = time.time() + wait_s
     while LOCK_FILE.exists() and _lock_holder_alive():
         if time.time() > deadline:
@@ -177,7 +170,6 @@ def browser(headless=True, wait_s=900):
                 # that hide automation and no user-agent override: this is a plain, visible
                 # automated Chrome using the user's own login.
                 ignore_default_args=["--no-sandbox"],
-                args=args,
             )
             try:
                 yield ctx
@@ -384,7 +376,6 @@ def _note_detail(page, item, max_comments):
         "author": user.get("nickname") or user.get("nick_name") or dom["nickname"],
         "author_id": user.get("userId") or user.get("user_id"),
         "time": time.strftime("%Y-%m-%d", time.localtime(ts / 1000)) if ts else dom["date"],
-        "ip_location": note.get("ipLocation"),
         "tags": [t.get("name") for t in note.get("tagList") or [] if t.get("name")],
         "liked": _to_int(inter.get("likedCount") or card.get("interact_info", {}).get("liked_count")),
         "collected": _to_int(inter.get("collectedCount")),
@@ -397,7 +388,6 @@ def _note_detail(page, item, max_comments):
                 "user": (c.get("user_info") or {}).get("nickname"),
                 "content": c.get("content"),
                 "likes": _to_int(c.get("like_count")),
-                "ip_location": c.get("ip_location"),
                 "replies": [
                     {"user": (s.get("user_info") or {}).get("nickname"), "content": s.get("content")}
                     for s in c.get("sub_comments") or []
@@ -408,11 +398,11 @@ def _note_detail(page, item, max_comments):
     }
 
 
-def search(keyword, limit=20, detail=True, max_comments=20, headless=True, progress=print):
+def search(keyword, limit=20, max_comments=20, headless=True, progress=print):
     lim = limits()
     if lim["cooldown_until"]:
-        raise Limited(f"小红书风控冷却中，{_hm(lim['cooldown_until'])} 之后才能再抓取。")
-    budget = min(lim["hour_left"], lim["day_left"]) if detail else limit
+        raise Limited(f"小红书提示访问过于频繁，已暂停抓取，{_hm(lim['cooldown_until'])} 之后再试。")
+    budget = min(lim["hour_left"], lim["day_left"])
     if budget <= 0:
         when = _hm(lim["hour_resets"]) if lim["day_left"] and lim.get("hour_resets") else "明天"
         raise Limited(f"已达到抓取上限（每小时 {HOURLY_CAP} 篇 / 每天 {DAILY_CAP} 篇），{when} 之后可以继续。")
@@ -432,17 +422,6 @@ def search(keyword, limit=20, detail=True, max_comments=20, headless=True, progr
         next_break = random.randint(4, 6)
         for i, it in enumerate(items, 1):
             card = it.get("note_card", {})
-            if not detail:
-                notes.append({
-                    "id": it["id"],
-                    "url": f"https://www.xiaohongshu.com/explore/{it['id']}?xsec_token={quote(it.get('xsec_token', ''))}&xsec_source=pc_search",
-                    "type": card.get("type"),
-                    "title": card.get("display_title", ""),
-                    "author": (card.get("user") or {}).get("nickname") or (card.get("user") or {}).get("nick_name"),
-                    "liked": _to_int((card.get("interact_info") or {}).get("liked_count")),
-                    "cover": (card.get("cover") or {}).get("url_default"),
-                })
-                continue
             progress(f"[{i}/{len(items)}] {card.get('display_title') or it['id']}")
             try:
                 notes.append(_note_detail(page, it, max_comments))

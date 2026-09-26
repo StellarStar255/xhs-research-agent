@@ -115,9 +115,11 @@ def load():
         s = {}
     s.setdefault("backend", "claude" if claude_available() else "codex" if codex_available() else "api")
     s.setdefault("ui", "window")  # packaged app: "window" (own window) or "browser"
-    # How the scraper's Chrome runs: "background" (headless) or "offscreen" (a real,
-    # visible-to-sites Chrome window placed off-screen, if headless ever gets blocked).
+    # How the scraper's Chrome runs: "background" (headless) or "visible" (a normal Chrome
+    # window on screen, so the user can watch what the assistant does).
     s.setdefault("browser_window", "background")
+    if s["browser_window"] == "offscreen":  # v0.1.11 name
+        s["browser_window"] = "visible"
     api = s.setdefault("api", {})
     if not api.get("provider"):
         api.update(provider="deepseek", base_url=PROVIDERS[0]["base_url"], model=PROVIDERS[0]["model"])

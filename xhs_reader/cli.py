@@ -19,7 +19,7 @@ def cmd_search(a):
         print(msg, flush=True)
         store.log(sid, msg)
     try:
-        notes = scraper.search(a.keyword, limit=a.limit, detail=not a.no_detail,
+        notes = scraper.search(a.keyword, limit=a.limit,
                                max_comments=a.comments, headless=not a.headed, progress=progress)
         store.save_notes(sid, notes)
         store.update_meta(sid, status="done", count=len(notes))
@@ -77,7 +77,7 @@ def cmd_digest(a):
     notes = store.read_notes(a.session)
     print(f"# 关键词: {meta['keyword']}  笔记数: {len(notes)}  (session {a.session})\n")
     for i, n in enumerate(notes, 1):
-        print(f"## [{i}] {n.get('title')}  | 作者 {n.get('author')} | {n.get('time', '')} {n.get('ip_location') or ''}")
+        print(f"## [{i}] {n.get('title')}  | 作者 {n.get('author')} | {n.get('time', '')}")
         print(f"赞 {n.get('liked', 0)} 藏 {n.get('collected', 0)} 评 {n.get('comment_count', 0)} | {n.get('url')}")
         if n.get("tags"):
             print("标签: " + " ".join(n["tags"]))
@@ -101,7 +101,6 @@ def main(argv=None):
     s.add_argument("-c", "--comments", type=int, default=20, help="max comments per note")
     s.add_argument("-q", "--question", help="the research question, stored with the session")
     s.add_argument("--session", help="reuse an existing (empty) session id")
-    s.add_argument("--no-detail", action="store_true", help="only collect search cards")
     s.add_argument("--headed", action="store_true", help="show the browser window")
     r = sub.add_parser("research", help="search then print digest (for the chat agent)")
     r.add_argument("keyword")

@@ -316,7 +316,7 @@ def get_browser_window():
 
 @app.post("/api/browser-window")
 def post_browser_window(req: BrowserWindowReq):
-    if req.mode not in ("background", "offscreen"):
+    if req.mode not in ("background", "visible"):
         raise HTTPException(400, "未知的抓取方式")
     s = settings.load()
     s["browser_window"] = req.mode

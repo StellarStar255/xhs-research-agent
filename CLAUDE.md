@@ -16,7 +16,8 @@ chosen in the GUI settings (data/settings.json) and fixed per chat:
   wrapping the same CLI; per-turn search/note caps are enforced in code.
 Both share xhs_reader/agent_prompt.md ({TOOLS}/{DATE} placeholders). Chats live in
 data/chats/*.json (+ data/chats/<id>/ images), scraped notes in data/research/<id>/.
-Scraper pacing/budgets/cooldown live in scraper.py (`./xhs limits`).
+Scraper pacing/budgets/cooldown live in scraper.py (`./xhs limits`); they're fixed constants on purpose
+(no env overrides — the usage notice tells users not to get around them). XHS_DATA_DIR is for tests/dev.
 No anti-detection, deliberately: don't hide automation (AutomationControlled / --enable-automation)
 or spoof the user agent. Publicly distributing a tool that evades a site's protections is what
 could make it a "专门工具" under 刑法285条第三款; v0.1.11 removed it after testing it isn't needed.

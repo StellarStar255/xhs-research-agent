@@ -226,7 +226,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
       <textarea id="input" rows="1" placeholder="问点什么，也可以粘贴或拖入图片……"></textarea>
       <button class="send" id="send" disabled>发送</button>
     </div>
-    <div class="hint">助手会慢速浏览小红书以免被风控，每次搜索约 2–3 分钟 · 支持粘贴 / 拖入图片 · Enter 发送，Shift+Enter 换行</div>
+    <div class="hint">助手会放慢速度浏览小红书，减少对平台的访问压力，每次搜索约 2–3 分钟 · 支持粘贴 / 拖入图片 · Enter 发送，Shift+Enter 换行</div>
   </div>
 </main>
 <div class="drawer" id="drawer">
@@ -342,7 +342,7 @@ function renderLimits(l) {
   const el = $('#limits');
   if (!l) return;
   el.className = 'limits' + (l.cooldown_until ? ' cool' : '');
-  el.textContent = l.cooldown_until ? `⚠ 风控冷却中，${hm(l.cooldown_until)} 后恢复抓取`
+  el.textContent = l.cooldown_until ? `⚠ 小红书提示访问过于频繁，已暂停，${hm(l.cooldown_until)} 后恢复`
     : `抓取额度：本小时剩 ${l.hour_left}/${l.hour_cap} 篇 · 今天剩 ${l.day_left}/${l.day_cap} 篇`;
 }
 setInterval(async () => { try { renderLimits((await api('/api/status')).limits); } catch {} }, 60000);
@@ -554,13 +554,13 @@ function showNote(n) {
   $('#sheet').innerHTML = `
     <button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button>
     <h2>${esc(titleOf(n))}</h2>
-    <div class="stats"><span>👤 ${esc(n.author || '')}</span><span>${esc(n.time || '')} ${esc(n.ip_location || '')}</span>
+    <div class="stats"><span>👤 ${esc(n.author || '')}</span><span>${esc(n.time || '')}</span>
       <span>♥ ${num(n.liked)}</span><span>★ ${num(n.collected)}</span><span>💬 ${num(n.comment_count)}</span>
       <a href="${esc(n.url)}" target="_blank">在小红书打开 ↗</a></div>
     ${(n.images || []).length ? `<div class="imgs">${n.images.map(u => `<img src="${esc(u)}" loading="lazy">`).join('')}</div>` : ''}
     <div class="desc">${esc(n.desc || '')}</div>
     ${(n.comments || []).length ? '<h3>评论</h3>' + n.comments.map(c => `
-      <div class="cmt"><span class="u">${esc(c.user)}${c.ip_location ? ' · ' + esc(c.ip_location) : ''} · ♥${num(c.likes)}</span><br>${esc(c.content)}
+      <div class="cmt"><span class="u">${esc(c.user)} · ♥${num(c.likes)}</span><br>${esc(c.content)}
         ${(c.replies || []).map(r => `<div class="r">↳ ${esc(r.user)}：${esc(r.content)}</div>`).join('')}</div>`).join('') : ''}`;
   $('#modal').classList.add('show');
 }
@@ -605,9 +605,9 @@ async function openSettings(message) {
     </div>` : ''}
     <h3>抓取方式</h3><div class="seg">
       <label class="opt ${bw.mode === 'background' ? 'on' : ''}"><input type="radio" name="bwmode" value="background" ${bw.mode === 'background' ? 'checked' : ''}>
-        <div>后台运行（推荐）<small>看不到任何窗口</small></div></label>
-      <label class="opt ${bw.mode === 'offscreen' ? 'on' : ''}"><input type="radio" name="bwmode" value="offscreen" ${bw.mode === 'offscreen' ? 'checked' : ''}>
-        <div>真实浏览器窗口<small>${bw.platform === 'win32' ? '窗口放在屏幕外，看不到' : '抓取时会显示一个 Chrome 窗口'}；后台运行被小红书拦截时再试这个</small></div></label>
+        <div>后台运行（默认）<small>不显示窗口</small></div></label>
+      <label class="opt ${bw.mode === 'visible' ? 'on' : ''}"><input type="radio" name="bwmode" value="visible" ${bw.mode === 'visible' ? 'checked' : ''}>
+        <div>显示浏览器窗口<small>抓取时显示 Chrome 窗口，可以看到助手的每一步操作</small></div></label>
     </div>
     <h3>回答问题用的大模型</h3>
     <label class="opt ${conf.claude_available ? '' : 'disabled'}"><input type="radio" name="backend" value="claude" ${conf.backend === 'claude' ? 'checked' : ''} ${conf.claude_available ? '' : 'disabled'}>
@@ -711,57 +711,11 @@ function renderUpdate() {
   if (upd.available && upd.notes_html) html += `<div class="notes md">${upd.notes_html}</div>`;
   el.innerHTML = html;
   const go = document.getElementById('uGo'), ck = document.getElementById('uCheck');
-  if (ck) ck.onclick = async () => { upd.phase = 'checking'; renderUpdate(); await api('/api/update/check', {method: 'POST'}); loadUpdate();
-
-/* ---------- first-run notice ---------- */
-function showNotice(readOnly) {
-  const n = $('#notice');
-  $('#noticeCheck').closest('label').hidden = readOnly;
-  $('#noticeNo').textContent = readOnly ? '关闭' : '不同意，退出';
-  $('#noticeYes').hidden = readOnly;
-  $('#noticeCheck').checked = false; $('#noticeYes').disabled = true;
-  n.dataset.readonly = readOnly ? '1' : '';
-  n.classList.add('show');
-}
-$('#noticeCheck').onchange = e => { $('#noticeYes').disabled = !e.target.checked; };
-$('#noticeYes').onclick = async () => {
-  await api('/api/notice/accept', {method: 'POST'});
-  $('#notice').classList.remove('show');
-  loadStatus(); loadSettings().catch(() => {});
-};
-$('#noticeNo').onclick = async () => {
-  if ($('#notice').dataset.readonly) { $('#notice').classList.remove('show'); return; }
-  try { await api('/api/shutdown', {method: 'POST'}); } catch {}
-  document.body.innerHTML = '<div class="bye" style="flex:1"><h2>已退出</h2><p>你没有同意使用须知，应用已关闭。</p></div>';
-};
-api('/api/notice').then(r => { if (!r.accepted) showNotice(false); }).catch(() => {}); };
+  if (ck) ck.onclick = async () => { upd.phase = 'checking'; renderUpdate(); await api('/api/update/check', {method: 'POST'}); loadUpdate(); };
   if (go) go.onclick = async () => {
     if (running && !confirm('还有调研正在进行，更新会停止它。继续吗？')) return;
     try { await api('/api/update/start', {method: 'POST'}); } catch (e) { alert(e.message); }
     loadUpdate();
-
-/* ---------- first-run notice ---------- */
-function showNotice(readOnly) {
-  const n = $('#notice');
-  $('#noticeCheck').closest('label').hidden = readOnly;
-  $('#noticeNo').textContent = readOnly ? '关闭' : '不同意，退出';
-  $('#noticeYes').hidden = readOnly;
-  $('#noticeCheck').checked = false; $('#noticeYes').disabled = true;
-  n.dataset.readonly = readOnly ? '1' : '';
-  n.classList.add('show');
-}
-$('#noticeCheck').onchange = e => { $('#noticeYes').disabled = !e.target.checked; };
-$('#noticeYes').onclick = async () => {
-  await api('/api/notice/accept', {method: 'POST'});
-  $('#notice').classList.remove('show');
-  loadStatus(); loadSettings().catch(() => {});
-};
-$('#noticeNo').onclick = async () => {
-  if ($('#notice').dataset.readonly) { $('#notice').classList.remove('show'); return; }
-  try { await api('/api/shutdown', {method: 'POST'}); } catch {}
-  document.body.innerHTML = '<div class="bye" style="flex:1"><h2>已退出</h2><p>你没有同意使用须知，应用已关闭。</p></div>';
-};
-api('/api/notice').then(r => { if (!r.accepted) showNotice(false); }).catch(() => {});
   };
   document.querySelectorAll('#sUpdate .md a').forEach(a => { a.target = '_blank'; a.rel = 'noopener'; });
 }
