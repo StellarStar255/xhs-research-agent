@@ -17,6 +17,9 @@ chosen in the GUI settings (data/settings.json) and fixed per chat:
 Both share xhs_reader/agent_prompt.md ({TOOLS}/{DATE} placeholders). Chats live in
 data/chats/*.json (+ data/chats/<id>/ images), scraped notes in data/research/<id>/.
 Scraper pacing/budgets/cooldown live in scraper.py (`./xhs limits`).
+No anti-detection, deliberately: don't hide automation (AutomationControlled / --enable-automation)
+or spoof the user agent. Publicly distributing a tool that evades a site's protections is what
+could make it a "专门工具" under 刑法285条第三款; v0.1.11 removed it after testing it isn't needed.
 
 Entry point: `python -m xhs_reader` (xhs_reader/app.py) picks a free port (8765 belongs to
 another app on the maintainer's Mac), reuses a running instance, opens the browser.

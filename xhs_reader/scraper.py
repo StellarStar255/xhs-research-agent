@@ -115,7 +115,9 @@ class NoBrowser(RuntimeError):
 def _pick_browser(p):
     """(channel, user agent) of an installed Chrome, else Edge (always present on Windows).
 
-    We drive the user's own browser rather than bundling Chromium.
+    We drive the user's own browser rather than bundling Chromium, and don't disguise it:
+    the user agent is whatever the browser reports (including "HeadlessChrome" when
+    headless), and automation is visible to sites (navigator.webdriver).
     """
     wanted = os.environ.get("XHS_BROWSER_CHANNEL")
     for channel in [wanted] if wanted else ["chrome", "msedge"]:
@@ -123,8 +125,7 @@ def _pick_browser(p):
             b = p.chromium.launch(channel=channel, headless=True)
         except PlaywrightError:
             continue
-        # Headless Chrome advertises "HeadlessChrome" in its UA; look like normal Chrome.
-        ua = b.new_page().evaluate("navigator.userAgent").replace("HeadlessChrome", "Chrome")
+        ua = b.new_page().evaluate("navigator.userAgent")
         b.close()
         return channel, ua
     raise NoBrowser("没有找到 Google Chrome。请先安装 Chrome（https://www.google.com/chrome/）后再试。")
@@ -149,16 +150,17 @@ def browser(headless=True, wait_s=900):
     LOCK_FILE.write_text(f"{os.getpid()} {time.time()}")
     try:
         with sync_playwright() as p:
-            channel, ua = _pick_browser(p)
+            channel, _ = _pick_browser(p)
             ctx = p.chromium.launch_persistent_context(
                 str(PROFILE_DIR),
                 channel=channel,
                 headless=headless,
                 viewport={"width": 1280, "height": 900},
                 locale="zh-CN",
-                user_agent=ua if headless else None,
-                args=["--disable-blink-features=AutomationControlled"],
-                ignore_default_args=["--no-sandbox", "--enable-automation"],
+                # Keep Chrome's sandbox on (Playwright adds --no-sandbox by default). No flags
+                # that hide automation and no user-agent override: this is a plain, visible
+                # automated Chrome using the user's own login.
+                ignore_default_args=["--no-sandbox"],
             )
             try:
                 yield ctx
