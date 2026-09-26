@@ -19,12 +19,41 @@ from . import paths
 DEFAULT_PORT = 8766
 
 
-def _is_ours(port):
+def _ping(port):
+    """The /api/ping reply if one of our instances is on this port, else None."""
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/ping", timeout=0.7) as r:
-            return json.load(r).get("app") == paths.APP_ID
+            info = json.load(r)
+        return info if info.get("app") == paths.APP_ID else None
+    except Exception:
+        return None
+
+
+def _is_ours(port):
+    return _ping(port) is not None
+
+
+def _vtuple(v):
+    import re
+    return tuple(int(x) for x in re.findall(r"\d+", v or "0")[:3])
+
+
+def _replace_older(port, info):
+    """An older version is still running (e.g. the app was reinstalled while open):
+    ask it to quit so this one takes over, instead of showing the old instance."""
+    from . import __version__
+    if _vtuple(info.get("version")) >= _vtuple(__version__):
+        return False
+    try:
+        urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/api/shutdown", method="POST"),
+                               timeout=3).read()
     except Exception:
         return False
+    for _ in range(50):  # wait for it to release the port
+        time.sleep(0.2)
+        if _is_free(port):
+            return True
+    return False
 
 
 def _is_free(port):
@@ -42,7 +71,10 @@ def _pick_port():
     """(port, already_running). Skips ports other programs are using."""
     first = int(os.environ.get("XHS_PORT", DEFAULT_PORT))
     for port in range(first, first + 20):
-        if _is_ours(port):
+        info = _ping(port)
+        if info:
+            if _replace_older(port, info):
+                return port, False
             return port, True
         if _is_free(port):
             return port, False

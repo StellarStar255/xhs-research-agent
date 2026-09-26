@@ -249,8 +249,9 @@ def login_status():
 
 @app.get("/api/ping")
 def ping():
-    """Lets a second launch find this already-running instance."""
-    return {"app": paths.APP_ID}
+    """Lets a second launch find this already-running instance (and its version)."""
+    from . import __version__
+    return {"app": paths.APP_ID, "version": __version__}
 
 
 server = None       # the uvicorn.Server, set by xhs_reader.app
