@@ -393,6 +393,7 @@ def serve():
 
 
 def main(argv=None):
+    paths.use_system_certificates()
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["cli"]:
         from . import cli

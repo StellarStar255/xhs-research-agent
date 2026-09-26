@@ -89,6 +89,8 @@ def cmd_digest(a):
 
 
 def main(argv=None):
+    from .paths import use_system_certificates
+    use_system_certificates()
     ap = argparse.ArgumentParser(prog="xhs_reader")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("login")
@@ -129,10 +131,14 @@ def main(argv=None):
     elif a.cmd == "digest":
         cmd_digest(a)
     elif a.cmd == "selftest":
+        # HTTPS with the bundled Python (update checks, model APIs); github.com has no API rate limit.
+        import urllib.request
+        with urllib.request.urlopen(urllib.request.Request("https://github.com", method="HEAD"), timeout=20) as r:
+            tls = r.status
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             channel, ua = scraper._pick_browser(p)
-        print(json.dumps({"ok": True, "browser": channel, "user_agent": ua}, ensure_ascii=False))
+        print(json.dumps({"ok": True, "https": tls, "browser": channel, "user_agent": ua}, ensure_ascii=False))
     elif a.cmd == "limits":
         print(json.dumps(scraper.limits(), ensure_ascii=False))
     elif a.cmd == "list":

@@ -28,6 +28,20 @@ def _data_dir():
 DATA_DIR = _data_dir()
 
 
+def use_system_certificates():
+    """Verify HTTPS against the OS trust store (macOS Keychain / Windows cert store).
+
+    The Python bundled into the packaged app ships without any CA certificates, so
+    urllib (update checks) failed with CERTIFICATE_VERIFY_FAILED. truststore makes
+    every ssl.SSLContext use the system's trust store instead.
+    """
+    try:
+        import truststore
+        truststore.inject_into_ssl()
+    except Exception:  # keep Python's default behaviour if it's unavailable
+        pass
+
+
 def cli_executable():
     """The packaged console CLI. A separate console-mode binary because a windowed
     Windows executable can't reliably write to the pipes we read its output from."""
