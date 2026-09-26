@@ -59,7 +59,7 @@ if MAC:
             "CFBundleName": "小红书调研助手",
             "CFBundleShortVersionString": VERSION,
             "CFBundleVersion": VERSION,
-            "LSUIElement": True,          # no Dock icon: the UI lives in the browser
+            "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "11.0",
             "NSHumanReadableCopyright": "MIT License · 与小红书无关联",
         },

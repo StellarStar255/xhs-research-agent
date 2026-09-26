@@ -50,7 +50,7 @@
 
 需要先安装 [Google Chrome](https://www.google.com/chrome/)（Windows 上没有 Chrome 时会使用系统自带的 Edge）。
 
-打开后会在浏览器里显示聊天页面，应用本身没有窗口，也不占 Dock。要关闭它，点页面左下角的「退出」；再次双击图标会重新打开页面。
+打开后是一个独立的「小红书调研助手」窗口，Dock（Windows 是任务栏）里有它的图标。顶部菜单里可以新建对话、打开设置、扫码登录、在浏览器中打开、打开数据文件夹。关闭窗口就会退出；有调研正在进行时会先问你。如果电脑缺少内置浏览器组件（少数 Windows 电脑），会自动改为在浏览器里打开。
 你的登录状态、对话记录和设置保存在 `~/.xhs-research-agent`（Windows：`%USERPROFILE%\.xhs-research-agent`），卸载或升级应用都不会删除它们。
 
 ## 从源码运行
@@ -84,7 +84,8 @@ python3 -m venv .venv
 - `XHS_PORT=8766`：修改端口
 - `XHS_DATA_DIR=~/xhs-data-2`：换一个数据目录（相当于另一个独立的账号和对话记录）
 - `XHS_CLAUDE_PATH=/path/to/claude`：Claude Code 装在不常见的位置时，手动指定路径
-- `XHS_NO_BROWSER=1`：启动时不自动打开浏览器
+- `XHS_UI=browser`：不用独立窗口，改为在浏览器里打开
+- `XHS_NO_BROWSER=1`：只启动后台服务，不打开窗口或浏览器
 
 ## 打包和发布
 

@@ -1,6 +1,7 @@
 """Local chat GUI (FastAPI). Started by xhs_reader.app: `python -m xhs_reader` or the packaged app."""
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -247,15 +248,19 @@ def ping():
     return {"app": paths.APP_ID}
 
 
-server = None  # the uvicorn.Server, set by xhs_reader.app
+server = None       # the uvicorn.Server, set by xhs_reader.app
+on_shutdown = None  # e.g. closes the native window
 
 
 @app.post("/api/shutdown")
 def shutdown():
+    """Stop running turns and the server (the page's 退出 button, or the window closing)."""
     for cid in [c["id"] for c in agent.list_chats() if c["running"]]:
         agent.stop(cid)
     if server:
         server.should_exit = True
+    if on_shutdown:
+        threading.Thread(target=on_shutdown, daemon=True).start()  # don't block the response
     return {"ok": True}
 
 
