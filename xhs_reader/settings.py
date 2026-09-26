@@ -79,6 +79,21 @@ def find_claude():
     return best
 
 
+# Bump when the first-run notice (static/index.html, NOTICE) changes materially, so
+# everyone is asked to read and accept it again.
+NOTICE_VERSION = 1
+
+
+def notice_accepted(s=None):
+    return (s or load()).get("notice_accepted", 0) >= NOTICE_VERSION
+
+
+def accept_notice():
+    s = load()
+    s["notice_accepted"] = NOTICE_VERSION
+    save(s)
+
+
 def claude_available():
     return find_claude() is not None
 

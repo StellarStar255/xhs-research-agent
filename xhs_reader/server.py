@@ -80,8 +80,25 @@ def chats():
     return agent.list_chats()
 
 
+def _require_notice():
+    if not settings.notice_accepted():
+        raise HTTPException(403, "请先阅读并同意「使用须知」")
+
+
+@app.get("/api/notice")
+def notice():
+    return {"accepted": settings.notice_accepted(), "version": settings.NOTICE_VERSION}
+
+
+@app.post("/api/notice/accept")
+def notice_accept():
+    settings.accept_notice()
+    return notice()
+
+
 @app.post("/api/chats")
 def send(req: ChatReq):
+    _require_notice()
     if not req.message.strip() and not req.images:
         raise HTTPException(400, "问题不能为空")
     if len(req.images) > 6:
@@ -221,6 +238,7 @@ def _login_status(refresh):
 @app.post("/api/login")
 def login():
     """Open a visible Chrome window with the QR code; poll /api/login/status for the result."""
+    _require_notice()
     p = _login["proc"]
     if p and p.poll() is None:
         return login_status()
