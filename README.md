@@ -45,7 +45,7 @@
 
 到 [Releases](https://github.com/StellarStar255/xhs-research-agent/releases) 下载最新版：
 
-- **macOS（Apple 芯片 M1 及以后）**：下载 `.dmg`，打开后把「小红书调研助手」拖进「应用程序」，然后双击打开。
+- **macOS（Apple 芯片 M1 及以后）**：下载 `.dmg`，打开后把「小红书调研助手」拖进「应用程序」，然后双击打开。正式版本经过 Apple 签名和公证，可以直接打开；如果提示「无法验证」，点「完成」，然后到**系统设置 → 隐私与安全性**里点「仍要打开」。
 - **Windows 10/11（64 位）**：下载 `-setup.exe` 安装，从开始菜单或桌面打开。安装时如果出现「Windows 已保护你的电脑」，点「更多信息 → 仍要运行」（Windows 版没有代码签名）。
 
 需要先安装 [Google Chrome](https://www.google.com/chrome/)（Windows 上没有 Chrome 时会使用系统自带的 Edge）。
@@ -89,7 +89,8 @@ python3 -m venv .venv
 ## 打包和发布
 
 推送 `v*` 标签（版本号要和 `xhs_reader/__init__.py` 里的一致）后，GitHub Actions 会自动打包 macOS 和 Windows 版本、运行冒烟测试，并发布到 Releases。也可以在 Actions 页面手动运行，只打包不发布。
-macOS 签名和公证需要在仓库的 Secrets 里配置 Apple 开发者证书，具体见 [.github/workflows/release.yml](.github/workflows/release.yml) 开头的说明。本地打包：
+macOS 签名和公证需要在仓库的 Secrets 里配置 Apple 开发者证书，具体见 [.github/workflows/release.yml](.github/workflows/release.yml) 开头的说明。
+也可以在本地签名：先用 `xcrun notarytool store-credentials <名字>` 保存公证凭证，再设置 `MACOS_SIGN_IDENTITY` 和 `NOTARY_PROFILE=<名字>` 运行下面的签名脚本。本地打包：
 
 ```bash
 .venv/bin/pip install -r packaging/requirements-build.txt

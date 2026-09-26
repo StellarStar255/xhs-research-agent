@@ -168,7 +168,7 @@ jobs:
             echo "需要先安装 [Google Chrome](https://www.google.com/chrome/)（Windows 上没有 Chrome 时会使用系统自带的 Edge）。"
             echo
             if [ "$SIGNED" != "true" ]; then
-              echo "> macOS 版这次没有签名：第一次打开时请在「应用程序」里**右键 → 打开**。"
+              echo "> macOS 版这次没有签名：第一次打开会提示「无法验证」。请点「完成」，然后打开**系统设置 → 隐私与安全性**，在下方点「**仍要打开**」。"
               echo
             fi
             echo "> Windows 版没有代码签名，安装时如果出现「Windows 已保护你的电脑」，点「更多信息 → 仍要运行」。"
