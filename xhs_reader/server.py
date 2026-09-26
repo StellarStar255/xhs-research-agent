@@ -41,7 +41,7 @@ class SettingsReq(BaseModel):
 
 def _merged(req: SettingsReq):
     s = settings.load()
-    if req.backend not in ("claude", "api"):
+    if req.backend not in ("claude", "codex", "api"):
         raise HTTPException(400, "未知的后端")
     s["backend"] = req.backend
     key = req.api.api_key.strip() or s["api"].get("api_key", "")

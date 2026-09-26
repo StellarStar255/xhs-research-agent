@@ -1,6 +1,7 @@
 """Which model backend answers chats, stored in data/settings.json (never committed).
 
 backend "claude": the local Claude Code CLI (`claude -p`), needs a Claude subscription.
+backend "codex":  the local OpenAI Codex CLI (`codex exec`), e.g. signed in with ChatGPT.
 backend "api":    any OpenAI-compatible chat API (DeepSeek, 通义千问, Kimi, 智谱, OpenAI…)
                   with the user's own API key.
 """
@@ -36,21 +37,19 @@ PROVIDERS = [
 ]
 
 
-# Where Claude Code's `claude` usually lives, for when the server was started
-# without it on PATH (e.g. not from a login shell).
-_CLAUDE_CANDIDATES = [
-    "~/.local/bin/claude", "~/.claude/local/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude",
-    "~/.npm-global/bin/claude", "~/.bun/bin/claude", "~/.volta/bin/claude", "~/.yarn/bin/claude",
-    "~/.nvm/versions/node/*/bin/claude", "~/Library/pnpm/claude", "~/.local/share/pnpm/claude",
-    # Windows (native installer, npm)
-    "~/.local/bin/claude.exe", "~/AppData/Roaming/npm/claude.cmd", "~/AppData/Local/Programs/claude/claude.exe",
+# Where agent CLIs usually live, for when the app was started without them on PATH
+# (double-clicked apps get a minimal PATH). {name} is claude or codex.
+_CLI_CANDIDATES = [
+    "~/.local/bin/{name}", "~/.claude/local/{name}", "/opt/homebrew/bin/{name}", "/usr/local/bin/{name}",
+    "~/.npm-global/bin/{name}", "~/.bun/bin/{name}", "~/.volta/bin/{name}", "~/.yarn/bin/{name}",
+    "~/.nvm/versions/node/*/bin/{name}", "~/Library/pnpm/{name}", "~/.local/share/pnpm/{name}",
+    # Windows (native installers, npm)
+    "~/.local/bin/{name}.exe", "~/AppData/Roaming/npm/{name}.cmd", "~/AppData/Local/Programs/{name}/{name}.exe",
 ]
+_found = {}  # cache: name -> path or None
 
 
-_found_claude = []  # cache: [path or None]
-
-
-def _claude_version(path):
+def _cli_version(path):
     try:
         out = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=15).stdout
         return tuple(int(x) for x in re.findall(r"\d+", out)[:3])
@@ -58,25 +57,24 @@ def _claude_version(path):
         return ()
 
 
-def find_claude():
-    """Path to this machine's Claude Code CLI, or None. With several installs (say an old
+def find_cli(name, env_override):
+    """Path to an agent CLI (claude / codex), or None. With several installs (say an old
     native install in ~/.local/bin and a newer Homebrew one), use the newest version."""
-    if os.environ.get("XHS_CLAUDE_PATH"):
-        return os.environ["XHS_CLAUDE_PATH"]
-    if _found_claude:
-        return _found_claude[0]
-    paths_ = [shutil.which("claude")]
-    for pattern in _CLAUDE_CANDIDATES:
-        paths_ += glob.glob(os.path.expanduser(pattern))
+    if os.environ.get(env_override):
+        return os.environ[env_override]
+    if name in _found:
+        return _found[name]
+    candidates = [shutil.which(name)]
+    for pattern in _CLI_CANDIDATES:
+        candidates += glob.glob(os.path.expanduser(pattern.format(name=name)))
     seen, found = set(), []
-    for f in filter(None, paths_):
+    for f in filter(None, candidates):
         real = os.path.realpath(f)
         if real not in seen and os.access(f, os.X_OK) and Path(f).is_file():
             seen.add(real)
             found.append(f)
-    best = max(found, key=_claude_version) if len(found) > 1 else (found[0] if found else None)
-    _found_claude.append(best)
-    return best
+    _found[name] = max(found, key=_cli_version) if len(found) > 1 else (found[0] if found else None)
+    return _found[name]
 
 
 # Bump when the first-run notice (static/index.html, NOTICE) changes materially, so
@@ -94,8 +92,20 @@ def accept_notice():
     save(s)
 
 
+def find_claude():
+    return find_cli("claude", "XHS_CLAUDE_PATH")
+
+
+def find_codex():
+    return find_cli("codex", "XHS_CODEX_PATH")
+
+
 def claude_available():
     return find_claude() is not None
+
+
+def codex_available():
+    return find_codex() is not None
 
 
 def load():
@@ -103,7 +113,7 @@ def load():
         s = json.loads(SETTINGS_FILE.read_text())
     except (FileNotFoundError, ValueError):
         s = {}
-    s.setdefault("backend", "claude" if claude_available() else "api")
+    s.setdefault("backend", "claude" if claude_available() else "codex" if codex_available() else "api")
     s.setdefault("ui", "window")  # packaged app: "window" (own window) or "browser"
     api = s.setdefault("api", {})
     if not api.get("provider"):
@@ -129,7 +139,7 @@ def public(s=None):
     api["has_key"] = bool(key)
     api["key_hint"] = f"{key[:3]}…{key[-4:]}" if len(key) > 10 else ("已填写" if key else "")
     return {"backend": s["backend"], "ui": s["ui"], "api": api, "claude_available": claude_available(),
-            "providers": PROVIDERS}
+            "codex_available": codex_available(), "providers": PROVIDERS}
 
 
 def api_ready(s=None):

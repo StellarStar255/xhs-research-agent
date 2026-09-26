@@ -7,6 +7,11 @@ Main product: a local chat GUI (`./start.sh` → http://localhost:8766). Two ans
 chosen in the GUI settings (data/settings.json) and fixed per chat:
 - "claude": `claude -p` headless (xhs_reader/agent.py), may only run `./xhs research|digest`.
   XHS_AGENT_MODEL=sonnet for faster turns.
+- "codex": `codex exec --json` (xhs_reader/codex_backend.py). Codex can't be limited to
+  specific commands, so it gets no shell (--disable shell_tool etc., --ignore-user-config,
+  read-only sandbox) and reaches the scraper only via our MCP server `xhs-cli mcp`
+  (xhs_reader/mcp_server.py, tools auto-approved with default_tools_approval_mode="approve").
+  Follow-ups: `codex exec resume <codex_thread>`.
 - "api": any OpenAI-compatible API with the user's key (xhs_reader/llm.py), function tools
   wrapping the same CLI; per-turn search/note caps are enforced in code.
 Both share xhs_reader/agent_prompt.md ({TOOLS}/{DATE} placeholders). Chats live in

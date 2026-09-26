@@ -71,6 +71,8 @@ jobs:
           export XHS_DATA_DIR="$RUNNER_TEMP/xhs-data" XHS_NO_BROWSER=1 XHS_PORT=8766
           "$BIN/xhs-cli" limits
           "$BIN/xhs-cli" selftest
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            | "$BIN/xhs-cli" mcp | grep -q search_xiaohongshu   # MCP server used by the Codex backend
           "$BIN/XHS Research Agent" & PID=$!
           for i in $(seq 1 30); do curl -sf localhost:8766/api/ping && break; sleep 1; done
           curl -sf localhost:8766/ -o /dev/null
@@ -123,6 +125,8 @@ jobs:
           $env:XHS_DATA_DIR = "$env:RUNNER_TEMP\xhs-data"; $env:XHS_NO_BROWSER = "1"; $env:XHS_PORT = "8766"
           & "$bin\xhs-cli.exe" limits;   if ($LASTEXITCODE) { throw "limits failed" }
           & "$bin\xhs-cli.exe" selftest; if ($LASTEXITCODE) { throw "selftest failed" }
+          $mcp = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}', '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | & "$bin\xhs-cli.exe" mcp
+          if (-not ($mcp -match 'search_xiaohongshu')) { throw "MCP server (Codex backend) failed: $mcp" }
           $p = Start-Process -FilePath "$bin\XHS Research Agent.exe" -PassThru
           $ok = $false
           foreach ($i in 1..30) { try { Invoke-RestMethod http://localhost:8766/api/ping | Out-Null; $ok = $true; break } catch { Start-Sleep 1 } }

@@ -116,7 +116,8 @@ def main(argv=None):
     d.add_argument("--max-comments", type=int, default=10)
     sub.add_parser("list")
     sub.add_parser("limits", help="show cooldown and remaining budget")
-    sub.add_parser("selftest", help="check the bundled driver can start the local browser (no network)")
+    sub.add_parser("selftest", help="check HTTPS and that the bundled driver can start the local browser")
+    sub.add_parser("mcp", help="run the scraper as an MCP server on stdio (used by the Codex backend)")
     a = ap.parse_args(argv)
 
     if a.cmd == "login":
@@ -130,6 +131,9 @@ def main(argv=None):
         cmd_research(a)
     elif a.cmd == "digest":
         cmd_digest(a)
+    elif a.cmd == "mcp":
+        from .mcp_server import serve
+        serve()
     elif a.cmd == "selftest":
         # HTTPS with the bundled Python (update checks, model APIs); github.com has no API rate limit.
         import urllib.request

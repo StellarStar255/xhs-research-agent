@@ -144,6 +144,8 @@ def send(cid, text, images=()):
                 raise RuntimeError("还没有配置大模型 API，请先点左下角「设置」填写 API Key")
             if conf["backend"] == "claude" and not settings.claude_available():
                 raise RuntimeError("这台电脑上没有找到 Claude Code，请在「设置」里改用大模型 API")
+            if conf["backend"] == "codex" and not settings.codex_available():
+                raise RuntimeError("这台电脑上没有找到 Codex，请在「设置」里换别的模型")
             cid = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
             title = text.strip().splitlines()[0][:30] if text.strip() else "图片分析"
             chat = {"id": cid, "title": title, "backend": conf["backend"], "claude_session": None,
@@ -161,14 +163,20 @@ def send(cid, text, images=()):
         chat["updated"] = time.strftime("%Y-%m-%d %H:%M")
         _save(chat)
 
-        if chat.get("backend", "claude") == "api":
+        backend = chat.get("backend", "claude")
+        if backend == "api":
             _runs[cid] = llm.start(cid)
+        elif backend == "codex":
+            from . import codex_backend
+            _runs[cid] = codex_backend.start(chat, text, names)
         else:
             _runs[cid] = _start_claude(chat, text, images)
     return cid
 
 
 def _model_label(chat):
+    if chat.get("backend") == "codex":
+        return "Codex"
     if chat.get("backend", "claude") == "claude":
         return f"Claude Code{' · ' + MODEL if MODEL else ''}"
     api = settings.load()["api"]

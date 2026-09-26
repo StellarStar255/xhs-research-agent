@@ -2,7 +2,7 @@
 
 一个本地运行的问答智能体：你用自然语言提问，它会用**你自己登录的小红书账号**实时搜索、阅读笔记和评论区，然后给出带原帖链接的回答。
 
-> A local chat agent that researches Xiaohongshu (RED) for you: ask a question, it searches notes and comments with your own logged-in account and answers with citations. Works with Claude Code, or any OpenAI-compatible API (DeepSeek, Qwen, Kimi, GLM, OpenAI…) with your own key.
+> A local chat agent that researches Xiaohongshu (RED) for you: ask a question, it searches notes and comments with your own logged-in account and answers with citations. Works with Claude Code, OpenAI Codex CLI, or any OpenAI-compatible API (DeepSeek, Qwen, Kimi, GLM, OpenAI…) with your own key.
 
 ## 功能
 
@@ -15,11 +15,12 @@
 
 ## 用哪个大模型回答？
 
-在界面左下角的「⚙ 设置」里二选一：
+在界面左下角的「⚙ 设置」里选一个：
 
 | 方式 | 适合谁 | 费用 |
 |---|---|---|
 | **Claude Code** | 已经订阅 Claude、装了 Claude Code 的人 | 计入 Claude 订阅用量 |
+| **Codex** | 装了 OpenAI Codex CLI 并登录（比如用 ChatGPT 账号 `codex login`）的人 | 计入 ChatGPT / OpenAI 的用量 |
 | **大模型 API** | 其他所有人 | 自己注册平台、充值、填 API Key，按用量付费。费用取决于所选模型和问题的复杂度，以平台定价为准 |
 
 大模型 API 内置了几个服务商的预设：DeepSeek、通义千问（阿里云百炼）、Kimi、智谱 GLM、OpenAI。也可以填任何兼容 OpenAI 格式的接口地址。
@@ -34,6 +35,7 @@
 ```
 浏览器 GUI ──► FastAPI (xhs_reader/server.py)
                  ├─► Claude Code：claude -p（只允许运行 ./xhs research / digest）
+                 ├─► Codex：codex exec（不给 shell，只能通过 MCP 服务器 xhs-cli mcp 调用抓取工具）
                  └─► 大模型 API：xhs_reader/llm.py（函数调用 search_xiaohongshu / read_previous_notes）
                         └─► ./xhs → Playwright + 本机 Chrome（持久化登录状态）──► 小红书网页版
 ```
@@ -73,7 +75,7 @@ python3 -m venv .venv
 
 第一次打开时，页面会引导你：
 1. **登录小红书**：点「扫码登录小红书」会弹出一个 Chrome 窗口，用小红书 App 扫码即可。登录状态保存在 `data/profile`，一般能保持很久；过期了，助手会在对话里提示你重新扫码。
-2. **选大模型**：装了并登录了 Claude Code 的，会自动使用它；没有的话，会提示你在「设置」里填 API Key。
+2. **选大模型**：装了并登录了 Claude Code 的会自动使用它，其次是 Codex；都没有的话，会提示你在「设置」里填 API Key。
 
 ## 命令行
 
@@ -91,7 +93,7 @@ python3 -m venv .venv
 - `XHS_AGENT_MODEL=sonnet`：让回答更快
 - `XHS_PORT=8766`：修改端口
 - `XHS_DATA_DIR=~/xhs-data-2`：换一个数据目录（相当于另一个独立的账号和对话记录）
-- `XHS_CLAUDE_PATH=/path/to/claude`：Claude Code 装在不常见的位置时，手动指定路径
+- `XHS_CLAUDE_PATH=/path/to/claude`、`XHS_CODEX_PATH=/path/to/codex`：Claude Code / Codex 装在不常见的位置时，手动指定路径
 - `XHS_UI=browser`：完全不启用原生外壳（没有窗口、Dock 图标和菜单栏图标），只在浏览器里打开
 - `XHS_NO_BROWSER=1`：只启动后台服务，不打开窗口或浏览器
 
