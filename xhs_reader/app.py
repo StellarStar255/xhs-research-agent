@@ -153,7 +153,17 @@ class MacShell:
             if self.item:
                 self.item.setVisible_(False)
             AK.NSApp.setActivationPolicy_(AK.NSApplicationActivationPolicyRegular)
+            # Becoming a regular app again resets the Dock tile (a blank document icon
+            # when running from source), so set the icon every time.
+            self._set_dock_icon_main()
             AK.NSApp.activateIgnoringOtherApps_(True)
+
+    def _set_dock_icon_main(self):
+        AK = self.AppKit
+        bundle_icon = AK.NSBundle.mainBundle().pathForResource_ofType_("icon", "icns") if paths.FROZEN else None
+        img = AK.NSImage.alloc().initWithContentsOfFile_(bundle_icon or str(ICON))
+        if img:
+            AK.NSApp.setApplicationIconImage_(img)
 
     def confirm_quit_main(self):
         """True if it's fine to quit (asks only while research is running)."""
