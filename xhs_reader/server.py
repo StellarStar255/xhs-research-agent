@@ -304,6 +304,26 @@ def update_start():
     return update_status()
 
 
+class BrowserWindowReq(BaseModel):
+    mode: str
+
+
+@app.get("/api/browser-window")
+def get_browser_window():
+    import sys
+    return {"mode": settings.load()["browser_window"], "platform": sys.platform}
+
+
+@app.post("/api/browser-window")
+def post_browser_window(req: BrowserWindowReq):
+    if req.mode not in ("background", "offscreen"):
+        raise HTTPException(400, "未知的抓取方式")
+    s = settings.load()
+    s["browser_window"] = req.mode
+    settings.save(s)
+    return get_browser_window()
+
+
 @app.get("/api/ui")
 def get_ui():
     return {"native": set_ui is not None, "mode": settings.load()["ui"]}

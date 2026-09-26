@@ -592,6 +592,7 @@ async function openSettings(message) {
   await loadSettings();
   const a = conf.api;
   const ui = await api('/api/ui').catch(() => ({native: false}));
+  const bw = await api('/api/browser-window').catch(() => ({mode: 'background', platform: ''}));
   $('#sheet').innerHTML = `<div class="settings">
     <button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button>
     <h2>设置</h2>
@@ -602,6 +603,12 @@ async function openSettings(message) {
       <label class="opt ${ui.mode === 'browser' ? 'on' : ''}"><input type="radio" name="uimode" value="browser" ${ui.mode === 'browser' ? 'checked' : ''}>
         <div>浏览器<small>在你的浏览器里打开；点 Dock 图标可以再次打开页面</small></div></label>
     </div>` : ''}
+    <h3>抓取方式</h3><div class="seg">
+      <label class="opt ${bw.mode === 'background' ? 'on' : ''}"><input type="radio" name="bwmode" value="background" ${bw.mode === 'background' ? 'checked' : ''}>
+        <div>后台运行（推荐）<small>看不到任何窗口</small></div></label>
+      <label class="opt ${bw.mode === 'offscreen' ? 'on' : ''}"><input type="radio" name="bwmode" value="offscreen" ${bw.mode === 'offscreen' ? 'checked' : ''}>
+        <div>真实浏览器窗口<small>${bw.platform === 'win32' ? '窗口放在屏幕外，看不到' : '抓取时会显示一个 Chrome 窗口'}；后台运行被小红书拦截时再试这个</small></div></label>
+    </div>
     <h3>回答问题用的大模型</h3>
     <label class="opt ${conf.claude_available ? '' : 'disabled'}"><input type="radio" name="backend" value="claude" ${conf.backend === 'claude' ? 'checked' : ''} ${conf.claude_available ? '' : 'disabled'}>
       <div>Claude Code<small>${conf.claude_available ? '使用本机已登录的 Claude Code（需要 Claude 订阅）' : '这台电脑没有安装 Claude Code'}</small></div></label>
@@ -631,6 +638,11 @@ async function openSettings(message) {
     document.querySelectorAll('.settings label.opt').forEach(l => { const i = l.querySelector('input[name=backend]'); if (i) l.classList.toggle('on', i.checked); });
   };
   document.querySelectorAll('input[name=backend]').forEach(r => r.onchange = sync);
+  document.querySelectorAll('input[name=bwmode]').forEach(r => r.onchange = async () => {
+    document.querySelectorAll('input[name=bwmode]').forEach(x => x.closest('label').classList.toggle('on', x.checked));
+    try { await api('/api/browser-window', {method: 'POST', body: JSON.stringify({mode: r.value})}); out('抓取方式已切换，下次抓取时生效', true); }
+    catch (e) { out(e.message, false); }
+  });
   document.querySelectorAll('input[name=uimode]').forEach(r => r.onchange = async () => {
     document.querySelectorAll('input[name=uimode]').forEach(x => x.closest('label').classList.toggle('on', x.checked));
     try { await api('/api/ui', {method: 'POST', body: JSON.stringify({mode: r.value})}); out('打开方式已切换，下次启动也会用这个方式', true); }

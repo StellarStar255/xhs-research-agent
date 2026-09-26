@@ -3,7 +3,7 @@ import json
 import re
 import time
 
-from .scraper import DATA_DIR
+from .paths import DATA_DIR
 
 RESEARCH_DIR = DATA_DIR / "research"
 

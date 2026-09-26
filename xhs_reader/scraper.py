@@ -8,6 +8,7 @@ import json
 import os
 import random
 import re
+import sys
 import time
 from contextlib import contextmanager
 from urllib.parse import quote
@@ -138,10 +139,25 @@ def _lock_holder_alive():
         return False
 
 
+OFFSCREEN = (-32000, -32000)  # Windows lets windows sit far off-screen
+
+
 @contextmanager
 def browser(headless=True, wait_s=900):
-    """Only one process may use the Chrome profile; wait for our turn."""
+    """Only one process may use the Chrome profile; wait for our turn.
+
+    headless=True runs per the "browser_window" setting: "background" is real headless
+    Chrome; "offscreen" is a normal Chrome window (user agent plain "Chrome" because it is
+    plain Chrome, not because we rewrite it) — off-screen on Windows, visible on macOS,
+    which clamps windows onto a display and ignores minimize/hide for automated Chrome.
+    """
+    from . import settings
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    args = []
+    if headless and settings.load().get("browser_window") == "offscreen":
+        headless = False
+        if sys.platform == "win32":
+            args = [f"--window-position={OFFSCREEN[0]},{OFFSCREEN[1]}"]
     deadline = time.time() + wait_s
     while LOCK_FILE.exists() and _lock_holder_alive():
         if time.time() > deadline:
@@ -161,6 +177,7 @@ def browser(headless=True, wait_s=900):
                 # that hide automation and no user-agent override: this is a plain, visible
                 # automated Chrome using the user's own login.
                 ignore_default_args=["--no-sandbox"],
+                args=args,
             )
             try:
                 yield ctx
