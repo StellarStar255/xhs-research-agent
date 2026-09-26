@@ -24,7 +24,7 @@ button { font: inherit; cursor: pointer; }
 aside { width: 260px; flex-shrink: 0; background: var(--side); border-right: 1px solid var(--line);
         display: flex; flex-direction: column; }
 .brand { padding: 18px 16px 12px; font-weight: 700; font-size: 16px; display: flex; align-items: center; gap: 8px; }
-.brand b { background: var(--accent); color: #fff; border-radius: 6px; padding: 0 7px; font-size: 12px; line-height: 22px; }
+.brand img { width: 26px; height: 26px; flex-shrink: 0; }
 .new { margin: 0 12px 10px; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
        border-radius: 10px; padding: 9px 12px; text-align: left; font-weight: 600; }
 .new:hover { border-color: var(--accent); color: var(--accent); }
@@ -186,7 +186,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 </head>
 <body>
 <aside>
-  <div class="brand"><b>RED</b> 小红书调研助手</div>
+  <div class="brand"><img src="/icon.png" alt=""> 小红书调研助手</div>
   <button class="new" id="newChat">＋ 新对话</button>
   <div class="chats" id="chats"></div>
   <div class="login"><span class="dot" id="dot"></span><span id="loginText">检查登录中…</span>
