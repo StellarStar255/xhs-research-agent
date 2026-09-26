@@ -176,7 +176,61 @@ def _model_label(chat):
     return f"{name.split('（')[0]} · {api.get('model')}" if name and api.get("provider") != "custom" else api.get("model", "")
 
 
+def _claude_projects_dir():
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
+
+
+def _ensure_resumable(session_id, cwd):
+    """Claude Code keeps sessions per working directory (~/.claude/projects/<cwd with every
+    non-alphanumeric char turned into '-'>/<id>.jsonl), and --resume only looks in the
+    current one. Chats made elsewhere (source runs in the repo, or copied over from them)
+    would fail with error_during_execution, so copy the transcript across. False if the
+    session isn't anywhere."""
+    base = _claude_projects_dir()
+    target = base / re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(cwd)) / f"{session_id}.jsonl"
+    if target.exists():
+        return True
+    found = next(base.glob(f"*/{session_id}.jsonl"), None)
+    if not found:
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(found, target)
+    return True
+
+
+def _transcript(chat, limit=6000):
+    """Earlier turns as plain text, to seed a fresh session when the old one is gone."""
+    lines = []
+    for m in chat["messages"][:-2]:  # everything before the turn being started
+        if m["role"] == "user":
+            lines.append(f"用户：{m.get('text') or '（发送了图片）'}")
+        else:
+            answer = next((p["text"] for p in reversed(m.get("parts") or []) if p["type"] == "text"), "")
+            if answer:
+                lines.append(f"助手：{answer[:1500]}")
+    text = "\n\n".join(lines)
+    return text[-limit:]
+
+
+def _user_images(cid, names):
+    out = []
+    for n in names or []:
+        f = image_dir(cid) / n
+        mime = next((k for k, v in EXT.items() if f.suffix == "." + v), "image/png")
+        if f.exists():
+            out.append({"media_type": mime, "data": base64.b64encode(f.read_bytes()).decode()})
+    return out
+
+
 def _start_claude(chat, text, images):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if chat.get("claude_session") and not _ensure_resumable(chat["claude_session"], DATA_DIR):
+        chat["claude_session"] = None  # the old session is gone: carry the context over as text
+    if not chat.get("claude_session") and len(chat["messages"]) > 2:
+        history = _transcript(chat)
+        if history:
+            text = (f"（这是继续之前的对话。之前的对话记录如下，供参考：）\n\n{history}\n\n"
+                    f"（以上是之前的对话。）用户现在说：{text or DEFAULT_IMAGE_PROMPT}")
     content = [{"type": "image", "source": {"type": "base64", "media_type": i["media_type"], "data": i["data"]}}
                for i in images]
     content.append({"type": "text", "text": text or DEFAULT_IMAGE_PROMPT})
@@ -193,7 +247,6 @@ def _start_claude(chat, text, images):
     env.pop("CLAUDECODE", None)
     # claude may be installed via node; make sure its own bin dir is on PATH.
     env["PATH"] = os.pathsep.join([str(Path(cmd[0]).parent), env.get("PATH", "")])
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
     proc = procutil.popen(cmd, cwd=DATA_DIR, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, text=True, bufsize=1)
     proc.stdin.write(json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n")
@@ -296,6 +349,7 @@ def _handle(chat, msg, ev):
             chat["claude_session"] = ev["session_id"]
         if ev.get("is_error") or ev.get("subtype") != "success":
             msg["status"] = "error"
+            msg["error_kind"] = ev.get("subtype")
             msg["error"] = msg.pop("claude_error", None) or claude_error("", str(ev.get("result") or ev.get("subtype")))
         else:
             msg["status"] = "done"
@@ -334,7 +388,26 @@ def _pump(cid, proc):
         update(cid, lambda chat, msg: _handle(chat, msg, ev))
     proc.wait()
     stopped = getattr(_runs.get(cid), "stopping", False)
+    if not stopped and _retry_without_resume(cid):
+        return
     finish(cid, stopped=stopped, error=None if stopped else ("\n".join(noise).strip()[-500:] or f"exit {proc.returncode}"))
+
+
+def _retry_without_resume(cid):
+    """If resuming the Claude session failed before any output, start once more as a new
+    session seeded with the conversation so far. True if a retry was started."""
+    with _lock:
+        chat = load(cid)
+        msg = chat["messages"][-1]
+        if not (chat.get("claude_session") and msg.get("error_kind") == "error_during_execution"
+                and not msg.get("parts") and not msg.get("retried")):
+            return False
+        user = chat["messages"][-2]
+        chat["claude_session"] = None
+        msg.update(status="running", error=None, error_kind=None, retried=True, draft="")
+        _save(chat)
+        _runs[cid] = _start_claude(chat, user.get("text") or "", _user_images(cid, user.get("images")))
+    return True
 
 
 def recover():
