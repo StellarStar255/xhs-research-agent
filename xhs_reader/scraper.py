@@ -29,7 +29,7 @@ ME_API = "/api/sns/web/v2/user/me"
 # Pacing & budgets (env-overridable). Viewing too many notes in a short time
 # gets the account rate-limited by the site (error 300013 "访问频繁").
 NOTE_DELAY = (6, 12)   # seconds between notes
-HOURLY_CAP = 40
+HOURLY_CAP = 60
 DAILY_CAP = 300
 COOLDOWN_H = 3         # hours to pause after the site says we're too frequent
 USAGE_FILE = DATA_DIR / "usage.json"        # timestamps of note-detail views
