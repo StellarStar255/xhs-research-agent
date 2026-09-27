@@ -379,6 +379,10 @@ def _handle(chat, msg, ev):
             msg["error"] = msg.pop("claude_error", None) or claude_error("", str(ev.get("result") or ev.get("subtype")))
         else:
             msg["status"] = "done"
+            u = ev.get("usage") or {}
+            msg["usage"] = {"prompt": sum(u.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens",
+                                                                   "cache_read_input_tokens")),
+                            "completion": u.get("output_tokens") or 0}
             if not any(p["type"] == "text" for p in msg["parts"]) and ev.get("result"):
                 msg["parts"].append({"type": "text", "text": ev["result"]})
 
