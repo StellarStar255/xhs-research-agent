@@ -68,10 +68,13 @@ def _mcp_config(turn_id):
 def start(chat, text, image_names, turn_id=""):
     codex = settings.find_codex() or "codex"
     thread = chat.get("codex_thread")
+    web = settings.load()["web_search"]
     cmd = [codex, "exec"] + (["resume", thread] if thread else []) + [
         "--json", "--skip-git-repo-check", "--ignore-user-config",
         "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"',
-        "-c", f"developer_instructions={_toml(agent.system_prompt(TOOLS_TEXT))}",
+        "-c", f"developer_instructions={_toml(agent.system_prompt(TOOLS_TEXT, web))}",
+        # Codex searches the web by default ("cached"); follow the user's setting instead.
+        "-c", f"web_search={_toml('live' if web else 'disabled')}",
     ]
     for feature in _features_to_disable(codex):
         cmd += ["--disable", feature]
@@ -115,6 +118,14 @@ def _handle(chat, msg, ev):
         chat["codex_thread"] = ev.get("thread_id")
     elif kind == "agent_message" and t == "item.completed" and (item.get("text") or "").strip():
         msg["parts"].append({"type": "text", "text": item["text"]})
+    elif kind == "web_search":
+        if t == "item.started":
+            msg["parts"].append(agent.tool_step("web_search", {"query": item.get("query") or ""}, item.get("id")))
+        else:
+            step = next((p for p in msg["parts"] if p.get("tool_id") == item.get("id")), None)
+            if step:
+                step["query"] = item.get("query") or (item.get("action") or {}).get("query") or step.get("query", "")
+                step["status"] = "done" if t == "item.completed" else step["status"]
     elif kind == "mcp_tool_call":
         if t == "item.started":
             msg["parts"].append(agent.tool_step(item.get("tool", ""), item.get("arguments") or {}, item.get("id")))

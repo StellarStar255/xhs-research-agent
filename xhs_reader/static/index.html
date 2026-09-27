@@ -137,7 +137,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .settings .field span { color: var(--muted); }
 .settings input, .settings select { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 8px;
                                     padding: 8px 10px; font: inherit; font-size: 14px; width: 100%; }
-.settings input[type=radio] { width: auto; margin: 5px 0 0; accent-color: var(--accent); }
+.settings input[type=radio], .settings input[type=checkbox] { width: auto; margin: 5px 0 0; accent-color: var(--accent); }
 .settings .row { display: flex; gap: 8px; }
 .settings .row input { flex: 1; }
 .settings .note { font-size: 12px; color: var(--muted); }
@@ -425,6 +425,10 @@ function renderStep(p) {
       : `<span class="prog" title="${esc(p.error || '')}">搜索失败</span>`;
     return `<div class="step ${p.status === 'error' ? 'err' : ['limited', 'login'].includes(p.status) ? 'warn' : ''}" title="${esc(p.error || '')}">${icon} 在小红书搜索 <span class="kw">「${esc(p.keyword)}」</span>${right}</div>`;
   }
+  if (p.type === 'web') {
+    const icon = p.status === 'running' ? '<span class="spin"></span>' : p.status === 'done' ? '🌐' : '✗';
+    return `<div class="step">${icon} 网页搜索 ${p.query ? `<span class="kw">「${esc(p.query)}」</span>` : ''}</div>`;
+  }
   if (p.type === 'open') {
     const icon = p.status === 'running' ? '<span class="spin"></span>' : p.status === 'done' ? '📖' : ['limited', 'login'].includes(p.status) ? '⚠' : '✗';
     const n = (p.notes || []).length;
@@ -656,6 +660,9 @@ async function openSettings(message) {
       <label class="opt ${bw.mode === 'visible' ? 'on' : ''}"><input type="radio" name="bwmode" value="visible" ${bw.mode === 'visible' ? 'checked' : ''}>
         <div>显示浏览器窗口<small>抓取时显示 Chrome 窗口，可以看到助手的每一步操作</small></div></label>
     </div>
+    <h3>联网搜索</h3>
+    <label class="opt ${conf.web_search ? 'on' : ''}"><input type="checkbox" id="sWeb" ${conf.web_search ? 'checked' : ''}>
+      <div>允许联网搜索<small>只用来查官方价格、参数、营业时间等客观信息，网页来源会标 🌐；真实体验仍以小红书为主。仅 Claude Code 和 Codex 支持，使用你自己的订阅额度</small></div></label>
     <h3>回答问题用的大模型</h3>
     <label class="opt ${conf.claude_available ? '' : 'disabled'}"><input type="radio" name="backend" value="claude" ${conf.backend === 'claude' ? 'checked' : ''} ${conf.claude_available ? '' : 'disabled'}>
       <div>Claude Code<small>${conf.claude_available ? '使用本机已登录的 Claude Code（需要 Claude 订阅）' : '这台电脑没有安装 Claude Code'}</small></div></label>
@@ -690,6 +697,13 @@ async function openSettings(message) {
     try { await api('/api/browser-window', {method: 'POST', body: JSON.stringify({mode: r.value})}); out('抓取方式已切换，下次抓取时生效', true); }
     catch (e) { out(e.message, false); }
   });
+  $('#sWeb').onchange = async () => {
+    const on = $('#sWeb').checked;
+    $('#sWeb').closest('label').classList.toggle('on', on);
+    try { await api('/api/web-search', {method: 'POST', body: JSON.stringify({enabled: on})}); conf.web_search = on;
+      out(on ? '已允许联网搜索，下一个问题开始生效' : '已关闭联网搜索', true); }
+    catch (e) { out(e.message, false); }
+  };
   document.querySelectorAll('input[name=uimode]').forEach(r => r.onchange = async () => {
     document.querySelectorAll('input[name=uimode]').forEach(x => x.closest('label').classList.toggle('on', x.checked));
     try { await api('/api/ui', {method: 'POST', body: JSON.stringify({mode: r.value})}); out('打开方式已切换，下次启动也会用这个方式', true); }

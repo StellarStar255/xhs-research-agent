@@ -33,7 +33,18 @@ DEFAULT_IMAGE_PROMPT = "请看看这张图片，结合小红书上的信息帮�
 _TEMPLATE = (Path(__file__).parent / "agent_prompt.md").read_text()
 
 
-def system_prompt(tools_text):
+WEB_TEXT = """
+
+另外你可以用网页搜索（web search），但**只用来查客观事实**：官方价格、参数配置、营业时间、开放日期、
+政策规定、赛程等小红书上不准确或查不到的信息。
+- 真实体验、口碑、推荐仍然以小红书为主，不要用网页搜索代替小红书。
+- 来自网页的信息在句末标注「🌐」并附上来源链接，和小红书笔记的内容分开写。
+- 每轮最多网页搜索 3 次。"""
+
+
+def system_prompt(tools_text, web=False):
+    if web:
+        tools_text += WEB_TEXT
     return _TEMPLATE.replace("{TOOLS}", tools_text).replace("{DATE}", time.strftime("%Y-%m-%d")).replace("{YEAR}", time.strftime("%Y"))
 
 
@@ -238,11 +249,14 @@ def _start_claude(chat, text, images, turn_id=""):
     from .mcp_server import launch_spec
     command, args, mcp_env = launch_spec(turn_id or uuid.uuid4().hex)
     mcp_config = json.dumps({"mcpServers": {"xhs": {"command": command, "args": args, "env": mcp_env}}})
-    # No built-in tools at all (no Bash, no Read: Read can't be confined to a folder); the
-    # only tools are our MCP server's, which enforce the per-turn budgets themselves.
+    # No built-in tools that touch the machine (no Bash, no Read: Read can't be confined to a
+    # folder); our MCP server's tools enforce the per-turn budgets themselves. WebSearch (if the
+    # user allowed it) only returns search results; WebFetch stays off.
+    web = settings.load()["web_search"]
     cmd = [settings.find_claude() or "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-           "--include-partial-messages", "--system-prompt", system_prompt(TOOLS_TEXT),
-           "--tools", "", "--mcp-config", mcp_config, "--strict-mcp-config", "--allowedTools", "mcp__xhs"]
+           "--include-partial-messages", "--system-prompt", system_prompt(TOOLS_TEXT, web),
+           "--tools", "WebSearch" if web else "", "--mcp-config", mcp_config, "--strict-mcp-config",
+           "--allowedTools", "mcp__xhs", *(["WebSearch"] if web else [])]
     if MODEL:
         cmd += ["--model", MODEL]
     if chat.get("claude_session"):
@@ -289,6 +303,8 @@ def tool_step(name, args, tool_id):
     step = {"tool_id": tool_id, "status": "running"}
     if name == "search_xiaohongshu":
         step.update(type="search", keyword=str(args.get("keyword", "")))
+    elif name in ("WebSearch", "web_search"):
+        step.update(type="web", query=str(args.get("query", "")))
     elif name == "open_notes":
         notes = args.get("notes") if isinstance(args.get("notes"), list) else []
         step.update(type="open", session=str(args.get("session", "")), notes=notes[:24])
@@ -363,7 +379,9 @@ def _handle(chat, msg, ev):
                 continue
             for p in msg["parts"]:
                 if p.get("tool_id") == b.get("tool_use_id"):
-                    if p["type"] == "images":
+                    if p["type"] == "web":
+                        p["status"] = "error" if b.get("is_error") else "done"
+                    elif p["type"] == "images":
                         c = b.get("content")
                         n = sum(1 for x in c if isinstance(x, dict) and x.get("type") == "image") if isinstance(c, list) else 0
                         apply_images_output(p, _result_text(b), n, b.get("is_error"))

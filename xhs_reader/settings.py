@@ -118,6 +118,9 @@ def load():
     # How the scraper's Chrome runs: "background" (headless) or "visible" (a normal Chrome
     # window on screen, so the user can watch what the assistant does).
     s.setdefault("browser_window", "background")
+    # Let Claude Code / Codex use their built-in web search for plain facts (official prices,
+    # specs, opening hours). Off by default: answers should rest on Xiaohongshu.
+    s.setdefault("web_search", False)
     if s["browser_window"] == "offscreen":  # v0.1.11 name
         s["browser_window"] = "visible"
     api = s.setdefault("api", {})
@@ -143,7 +146,7 @@ def public(s=None):
     key = api.pop("api_key", "")
     api["has_key"] = bool(key)
     api["key_hint"] = f"{key[:3]}…{key[-4:]}" if len(key) > 10 else ("已填写" if key else "")
-    return {"backend": s["backend"], "ui": s["ui"], "browser_window": s["browser_window"], "api": api, "claude_available": claude_available(),
+    return {"backend": s["backend"], "ui": s["ui"], "browser_window": s["browser_window"], "web_search": s["web_search"], "api": api, "claude_available": claude_available(),
             "codex_available": codex_available(), "providers": PROVIDERS}
 
 

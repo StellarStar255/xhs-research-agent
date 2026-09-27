@@ -19,7 +19,9 @@ All backends share xhs_reader/agent_prompt.md ({TOOLS}/{DATE}) and xhs_reader/to
 TOOLS_TEXT, ToolRunner with the per-turn budgets): search_xiaohongshu (`xhs find`: results list only,
 no note opened, no page-view budget) → open_notes (`xhs open <sid> N…`: opens chosen notes, ≤6 per
 call / 24 per turn; notes opened in the last 7 days come from the local cache for free) →
-view_note_images; plus read_previous_notes. Image budgets are keyed by a turn id (XHS_TURN_ID). Chats live in
+view_note_images; plus read_previous_notes. Settings → 联网搜索 (settings web_search, off by default)
+adds Claude's WebSearch tool (never WebFetch) / Codex `web_search="live"` (otherwise "disabled": Codex
+searches by default) and agent.WEB_TEXT to the prompt; the API backend has no web search. Image budgets are keyed by a turn id (XHS_TURN_ID). Chats live in
 data/chats/*.json (+ data/chats/<id>/ images), scraped notes in data/research/<id>/.
 Scraper pacing/budgets/cooldown live in scraper.py (`./xhs limits`); they're fixed constants on purpose
 (no env overrides — the usage notice tells users not to get around them). XHS_DATA_DIR is for tests/dev.

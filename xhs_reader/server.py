@@ -329,6 +329,18 @@ def post_browser_window(req: BrowserWindowReq):
     return get_browser_window()
 
 
+class WebSearchReq(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/web-search")
+def post_web_search(req: WebSearchReq):
+    s = settings.load()
+    s["web_search"] = req.enabled
+    settings.save(s)
+    return {"enabled": s["web_search"]}
+
+
 @app.get("/api/ui")
 def get_ui():
     return {"native": set_ui is not None, "mode": settings.load()["ui"]}
