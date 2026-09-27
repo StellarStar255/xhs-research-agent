@@ -34,7 +34,7 @@ _TEMPLATE = (Path(__file__).parent / "agent_prompt.md").read_text()
 
 
 def system_prompt(tools_text):
-    return _TEMPLATE.replace("{TOOLS}", tools_text).replace("{DATE}", time.strftime("%Y-%m-%d"))
+    return _TEMPLATE.replace("{TOOLS}", tools_text).replace("{DATE}", time.strftime("%Y-%m-%d")).replace("{YEAR}", time.strftime("%Y"))
 
 
 _lock = threading.RLock()

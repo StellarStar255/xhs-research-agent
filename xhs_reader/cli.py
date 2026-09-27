@@ -82,7 +82,8 @@ def cmd_find(a):
     store.update_meta(sid, status="done", count=len(cards))
     print(f"SESSION {sid}")
     print_digest(sid)
-    print("以上笔记都还没打开。用 open_notes 挑与问题最相关、赞藏多的几篇打开（一般 3～5 篇），标题明显跑题的不要打开。")
+    print("以上笔记都还没打开。用 open_notes 挑与问题最相关的几篇打开（一般 3～5 篇）：同一作者最多 1 篇，"
+          "要文字信息时优先图文，评价类问题至少挑 1 篇批评/避雷的，标题明显跑题的不要打开。")
 
 
 def cmd_open(a):
