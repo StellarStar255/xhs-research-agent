@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 
 from . import agent, paths, procutil, settings
-from .llm import TOOLS_TEXT
+from .tools import TOOLS_TEXT
 
 # Everything besides our MCP tools that could act on the machine or the web.
 DISABLED_FEATURES = ["shell_tool", "browser_use", "browser_use_external", "computer_use", "in_app_browser",
@@ -123,7 +123,7 @@ def _handle(chat, msg, ev):
             if step:
                 if item.get("status") == "completed":
                     text, is_error = _tool_text(item)
-                    if step["type"] == "search":
+                    if step["type"] in ("search", "open", "read"):
                         agent.apply_tool_output(step, text, is_error)
                     elif step["type"] == "images":
                         n = sum(1 for c in (item.get("result") or {}).get("content") or []

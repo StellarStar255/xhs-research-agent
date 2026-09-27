@@ -234,7 +234,7 @@ def _start_claude(chat, text, images, turn_id=""):
     content = [{"type": "image", "source": {"type": "base64", "media_type": i["media_type"], "data": i["data"]}}
                for i in images]
     content.append({"type": "text", "text": text or DEFAULT_IMAGE_PROMPT})
-    from .llm import TOOLS_TEXT
+    from .tools import TOOLS_TEXT
     from .mcp_server import launch_spec
     command, args, mcp_env = launch_spec(turn_id or uuid.uuid4().hex)
     mcp_config = json.dumps({"mcpServers": {"xhs": {"command": command, "args": args, "env": mcp_env}}})
@@ -262,19 +262,21 @@ def _start_claude(chat, text, images, turn_id=""):
 # ---------- tool steps (shared by both backends) ----------
 
 def apply_tool_output(step, out, is_error=False):
-    """Fill a search/read step from the scraper CLI's output."""
+    """Fill a search/open/read step from the tool's output."""
     m = re.search(r"SESSION (\S+)", out)
     if m:
         step["session"] = m.group(1)
-    n = re.search(r"笔记数: (\d+)", out)
+    n = re.search(r"已打开 (\d+) 篇" if step["type"] == "open" else r"笔记数: (\d+)", out)
     if n:
         step["count"] = int(n.group(1))
     lim = re.search(r"LIMITED: ([^\n]*?)(?: 请不要|$)", out, re.M)
-    failed = is_error or "ERROR" in out[:300] or (not m and step["type"] == "search")
+    failed = is_error or "ERROR" in out[:300] or (not m and step["type"] in ("search", "open"))
     if "NOT_LOGGED_IN" in out:
         step["status"], step["error"] = "login", "小红书未登录或登录已过期"
     elif lim:
         step["status"], step["error"] = "limited", lim.group(1)
+    elif not m and out.startswith("本轮已经"):  # the per-turn budget (tools.py)
+        step["status"], step["error"] = "limited", out.split("，请用")[0].split("。")[0]
     else:
         step["status"] = "error" if failed else "done"
         if failed:
@@ -287,6 +289,9 @@ def tool_step(name, args, tool_id):
     step = {"tool_id": tool_id, "status": "running"}
     if name == "search_xiaohongshu":
         step.update(type="search", keyword=str(args.get("keyword", "")))
+    elif name == "open_notes":
+        notes = args.get("notes") if isinstance(args.get("notes"), list) else []
+        step.update(type="open", session=str(args.get("session", "")), notes=notes[:24])
     elif name == "read_previous_notes":
         step.update(type="read", session=str(args.get("session", "")))
     elif name == "view_note_images":

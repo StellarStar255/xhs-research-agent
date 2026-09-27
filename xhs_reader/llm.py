@@ -1,61 +1,21 @@
 """Agent loop for any OpenAI-compatible chat API (DeepSeek, 通义千问, Kimi, 智谱, OpenAI…).
 
-The model gets two function tools that wrap the scraper CLI. Per-turn budgets are
-enforced here rather than trusted to the prompt, since smaller models follow
-instructions less reliably. Conversation history (in OpenAI message format) is
+The model gets the function tools from tools.py, which also enforce the per-turn
+budgets (rather than trusting the prompt; smaller models follow instructions less
+reliably). Conversation history (in OpenAI message format) is
 kept in chat["llm_history"]; pasted images are stored there by file name and
 re-inlined as data URLs when sent.
 """
 import base64
 import json
 from pathlib import Path
-import subprocess
 import threading
 import time
 
-from . import agent, paths, procutil, settings
+from . import agent, procutil, settings
+from .tools import TOOLS, TOOLS_TEXT, ToolRunner
 
 MAX_STEPS = 10           # model calls per turn
-MAX_SEARCHES = 3         # search_xiaohongshu calls per turn
-MAX_NOTES = 24           # notes scraped per turn
-DEFAULT_NOTES, MAX_NOTES_PER_SEARCH = 8, 12
-
-TOOLS = [
-    {"type": "function", "function": {
-        "name": "search_xiaohongshu",
-        "description": "在小红书搜索一个关键词，慢速抓取前几篇笔记的正文和热门评论（约 2–3 分钟）。"
-                       "返回 SESSION id，以及每篇笔记的标题、作者、日期、赞/藏/评数、链接、正文和评论。",
-        "parameters": {"type": "object", "properties": {
-            "keyword": {"type": "string", "description": "搜索关键词，用小红书用户会用的口语化中文"},
-            "limit": {"type": "integer", "description": f"抓取笔记数，默认 {DEFAULT_NOTES}，最多 {MAX_NOTES_PER_SEARCH}"},
-        }, "required": ["keyword"]}}},
-    {"type": "function", "function": {
-        "name": "read_previous_notes",
-        "description": "重新读取之前某次搜索抓到的笔记（不访问小红书，很快）。",
-        "parameters": {"type": "object", "properties": {
-            "session": {"type": "string", "description": "之前搜索结果里给出的 SESSION id"},
-        }, "required": ["session"]}}},
-    {"type": "function", "function": {
-        "name": "view_note_images",
-        "description": "查看某篇笔记的图片（很多笔记的内容写在图片里，正文很短）。不打开笔记页面，不占抓取额度。"
-                       "每次最多 4 张，每轮对话最多 12 张。",
-        "parameters": {"type": "object", "properties": {
-            "session": {"type": "string", "description": "搜索结果里给出的 SESSION id"},
-            "note": {"type": "integer", "description": "笔记编号，也就是结果里 [3] 这样的数字"},
-            "limit": {"type": "integer", "description": "要看几张，默认 4，最多 4"},
-        }, "required": ["session", "note"]}}},
-]
-
-TOOLS_TEXT = f"""你有三个工具：
-
-- `search_xiaohongshu(keyword, limit)`：在小红书搜索并抓取笔记（慢）。每轮对话最多调用 {MAX_SEARCHES} 次、合计最多 {MAX_NOTES} 篇。
-- `read_previous_notes(session)`：重新读取之前抓过的笔记，不访问小红书。
-- `view_note_images(session, note, limit)`：查看某篇笔记的图片。结果里标着「正文很短，内容可能在图片里」、
-  而且对回答很重要的笔记，就用它看图（比如价格表、清单、测评对比图）。每次最多 4 张、每轮最多 12 张，只看最关键的几篇。
-  图片链接过一段时间会失效，所以要在抓取后的同一轮里看。
-
-工具返回里的笔记链接可以直接用于引用。"""
-
 
 class ApiRun:
     def __init__(self, cid, turn_id=""):
@@ -64,6 +24,7 @@ class ApiRun:
         self.pending_images = []  # paths from view_note_images, sent after the tool results
         self.stopped = False
         self.proc = None
+        self.tools = ToolRunner(turn_id, on_proc=lambda p: setattr(self, "proc", p))
         self.thread = threading.Thread(target=self._main, daemon=True)
 
     def alive(self):
@@ -153,19 +114,6 @@ def _repair(history):
     return out
 
 
-def _run_cli(run, args):
-    """Run the scraper CLI, killable via run.stop()."""
-    run.proc = procutil.popen(paths.cli_command(*args), cwd=paths.DATA_DIR, env=paths.child_env(),
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    try:
-        out, _ = run.proc.communicate(timeout=900)
-    except subprocess.TimeoutExpired:
-        run.stop()
-        out = "ERROR: 抓取超时"
-    code, run.proc = run.proc.returncode, None
-    return out, code != 0
-
-
 def run_turn(run):
     cid = run.cid
     chat = agent.load(cid)
@@ -174,7 +122,6 @@ def run_turn(run):
     history.append({"role": "user", "content": _user_content(cid, user["text"], user.get("images"))})
     cl, model = client()
     prompt = agent.system_prompt(TOOLS_TEXT)
-    searches = notes = 0
     usage = {"prompt": 0, "completion": 0}
 
     def save_history(chat, msg):
@@ -231,7 +178,7 @@ def run_turn(run):
             if run.stopped:
                 result = "已被用户停止。"
             else:
-                result, searches, notes = _call_tool(run, tc, user["text"], searches, notes)
+                result = _call_tool(run, tc, user["text"])
             history.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
             agent.update(cid, save_history)
         if run.pending_images:  # tool messages can't carry images; send them as a user turn
@@ -257,61 +204,25 @@ def _create(cl, **kw):
     return cl.chat.completions.create(**kw)
 
 
-def _call_tool(run, tc, question, searches, notes):
-    """Execute one tool call; returns (result_text, searches, notes)."""
+def _call_tool(run, tc, question):
+    """Execute one tool call via the shared runner, mirroring it as a step in the chat."""
     cid, name = run.cid, tc["function"]["name"]
     try:
         args = json.loads(tc["function"]["arguments"] or "{}")
     except ValueError:
         args = {}
-
-    if name == "search_xiaohongshu":
-        step = {"type": "search", "keyword": str(args.get("keyword", "")).strip(), "tool_id": tc["id"], "status": "running"}
-        room = MAX_NOTES - notes
-        if searches >= MAX_SEARCHES or room <= 0:
-            step.update(status="limited", error="本轮搜索次数已用完")
-            agent.update(cid, lambda c, m: m["parts"].append(step))
-            return (f"本轮已经搜索了 {searches} 次、{notes} 篇笔记，达到上限，不能再搜。请用已有信息回答。", searches, notes)
-        if not step["keyword"]:
-            return "缺少 keyword 参数。", searches, notes
-        try:
-            limit = int(args.get("limit") or DEFAULT_NOTES)
-        except (TypeError, ValueError):
-            limit = DEFAULT_NOTES
-        limit = max(1, min(limit, MAX_NOTES_PER_SEARCH, room))
-        agent.update(cid, lambda c, m: m["parts"].append(step))
-        out, failed = _run_cli(run, ["research", step["keyword"], "-q", question or step["keyword"], "-n", str(limit)])
-        agent.apply_tool_output(step, out, failed)
-        agent.update(cid, lambda c, m: _replace_step(m, step))
-        return out[-60000:], searches + 1, notes + (step.get("count") or 0)
-
-    if name == "view_note_images":
-        from . import images
-        step = agent.tool_step(name, args, tc["id"])
-        agent.update(cid, lambda c, m: m["parts"].append(step))
-        try:
-            title, paths_ = images.note_images(str(args.get("session", "")).strip(), int(args.get("note") or 0),
-                                               args.get("limit") or images.MAX_PER_NOTE, turn_id=run.turn_id)
-        except (images.ImageError, ValueError, TypeError) as e:
-            agent.apply_images_output(step, str(e), 0)
-            agent.update(cid, lambda c, m: _replace_step(m, step))
-            return str(e), searches, notes
-        run.pending_images += paths_
-        text = f"「{title}」的 {len(paths_)} 张图片已附在下一条消息里。"
-        agent.apply_images_output(step, text, len(paths_))
-        agent.update(cid, lambda c, m: _replace_step(m, step))
-        return text, searches, notes
-
-    if name == "read_previous_notes":
-        sid = str(args.get("session", "")).strip()
-        step = {"type": "read", "session": sid, "tool_id": tc["id"], "status": "running"}
-        agent.update(cid, lambda c, m: m["parts"].append(step))
-        out, failed = _run_cli(run, ["digest", sid]) if sid else ("缺少 session 参数。", True)
-        step["status"] = "error" if failed else "done"
-        agent.update(cid, lambda c, m: _replace_step(m, step))
-        return out[-60000:], searches, notes
-
-    return f"没有叫 {name} 的工具。", searches, notes
+    step = agent.tool_step(name, args, tc["id"])
+    agent.update(cid, lambda c, m: m["parts"].append(step))
+    r = run.tools.call(name, args, question)
+    if step["type"] == "images":
+        run.pending_images += r["images"]
+        text = r["text"] + ("（图片附在下一条消息里）" if r["images"] else "")
+        agent.apply_images_output(step, r["text"], len(r["images"]), r["is_error"])
+    else:
+        text = r["text"]
+        agent.apply_tool_output(step, text, r["is_error"])
+    agent.update(cid, lambda c, m: _replace_step(m, step))
+    return text[-60000:]
 
 
 def _replace_step(msg, step):

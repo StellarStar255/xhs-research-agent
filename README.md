@@ -34,15 +34,16 @@
 
 ```
 浏览器 GUI ──► FastAPI (xhs_reader/server.py)
-                 ├─► Claude Code：claude -p（只允许运行 ./xhs research / digest）
-                 ├─► Codex：codex exec（不给 shell，只能通过 MCP 服务器 xhs-cli mcp 调用抓取工具）
-                 └─► 大模型 API：xhs_reader/llm.py（函数调用 search_xiaohongshu / read_previous_notes）
+                 ├─► Claude Code：claude -p（不给任何内置工具，只能通过 MCP 服务器 xhs-cli mcp 调用抓取工具）
+                 ├─► Codex：codex exec（同上，只能用 MCP 工具）
+                 └─► 大模型 API：xhs_reader/llm.py（函数调用，工具定义同上：xhs_reader/tools.py）
                         └─► ./xhs → Playwright + 本机 Chrome（持久化登录状态）──► 小红书网页版
 ```
 
 - 抓取：用 Playwright 驱动本机的 Google Chrome，通过监听网页自身的接口响应拿到搜索结果和评论，笔记详情从页面状态里读取。
   **不做任何伪装**：不隐藏自动化标记、不修改浏览器标识，网站可以看到这是自动化的浏览器；也不破解接口签名或验证码。
-- 推理：两种后端用同一份提示词（`xhs_reader/agent_prompt.md`）。API 模式下，每轮最多搜 3 次、24 篇的限制由代码强制执行，不依赖模型是否听话。
+- 工具：`search_xiaohongshu` 只看搜索列表（不打开笔记）→ `open_notes` 挑相关的几篇打开读正文和评论 → 需要时 `view_note_images` 看图。
+- 推理：所有后端用同一份提示词（`xhs_reader/agent_prompt.md`）和同一套工具（`xhs_reader/tools.py`）。每轮最多搜 3 次、打开 24 篇的限制由代码强制执行，不依赖模型是否听话。
 
 ## 下载安装（推荐）
 
@@ -82,8 +83,10 @@ python3 -m venv .venv
 
 ```bash
 ./xhs status                          # 查看登录状态
-./xhs research "关键词" -n 12 -c 15    # 搜索并输出摘要（智能体用的工具）
-./xhs search "关键词" -n 20            # 只抓取，保存到 data/research/<id>/
+./xhs find "关键词"                    # 只看搜索列表（不打开笔记，不占额度）
+./xhs open <id> 1 4 7                 # 打开列表里的第 1、4、7 篇，输出正文和评论
+./xhs research "关键词" -n 8           # 搜索并直接打开前 8 篇
+./xhs search "关键词" -n 20            # 同上，只保存到 data/research/<id>/
 ./xhs digest <id>                     # 重新输出某次抓取的摘要
 ./xhs list
 ./xhs selftest                        # 检查能否启动本机浏览器（不访问小红书）
@@ -116,7 +119,9 @@ packaging/macos_sign_notarize.sh "dist/XHS Research Agent.app" dist/app.dmg   # 
 
 这个工具用的是你自己的账号，所以默认访问得很慢、很少，既保护你的账号，也尽量减少对平台的访问压力：
 
-- **数量上限**：每次搜索默认 8 篇、每轮对话最多约 24 篇；1 小时内最多 60 篇、24 小时内最多 300 篇（按滚动时间窗口计算）
+- **先看列表再挑着打开**：搜索只读结果列表，不打开任何笔记；助手从中挑 3～5 篇相关的再打开，每轮对话最多打开 24 篇
+- **不重复打开**：7 天内打开过的笔记直接用本地缓存，不再访问、也不占额度
+- **数量上限**：打开笔记 1 小时内最多 60 篇、24 小时内最多 300 篇（按滚动时间窗口计算）
 - **放慢节奏**：每两篇笔记之间都会停顿一段时间
 - **自动停止**：如果小红书提示访问过于频繁，会立即停止，并在 3 小时内不再访问
 - 同一时间只有一个浏览器实例在运行

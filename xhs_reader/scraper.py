@@ -401,19 +401,45 @@ def _note_detail(page, item, max_comments):
     }
 
 
-def search(keyword, limit=20, max_comments=20, headless=True, progress=print):
+def _card(it):
+    """A search-result card, stored as-is in notes.json until the note is opened."""
+    card = it.get("note_card") or {}
+    user = card.get("user") or {}
+    inter = card.get("interact_info") or {}
+    return {
+        "id": it["id"],
+        "xsec_token": it.get("xsec_token", ""),
+        "url": f"https://www.xiaohongshu.com/explore/{it['id']}?xsec_token={quote(it.get('xsec_token', ''))}&xsec_source=pc_search",
+        "type": card.get("type"),
+        "title": card.get("display_title", ""),
+        "author": user.get("nickname") or user.get("nick_name"),
+        "liked": _to_int(inter.get("liked_count")),
+        "collected": _to_int(inter.get("collected_count")),
+        "comment_count": _to_int(inter.get("comment_count")),
+        "cover": (card.get("cover") or {}).get("url_default"),
+        "opened": False,
+    }
+
+
+def _as_item(card):
+    """Rebuild the search-API shape _note_detail expects from a stored card."""
+    return {"id": card["id"], "xsec_token": card.get("xsec_token", ""), "note_card": {
+        "display_title": card.get("title", ""), "type": card.get("type"),
+        "user": {"nickname": card.get("author")}, "interact_info": {"liked_count": card.get("liked")},
+        "cover": {"url_default": card.get("cover")}}}
+
+
+def _check_cooldown():
     lim = limits()
     if lim["cooldown_until"]:
         raise Limited(f"小红书提示访问过于频繁，已暂停抓取，{_hm(lim['cooldown_until'])} 之后再试。")
-    budget = min(lim["hour_left"], lim["day_left"])
-    if budget <= 0:
-        resets = lim.get("day_resets") if not lim["day_left"] else lim.get("hour_resets")
-        when = _hm(resets) if resets else "稍后"
-        raise Limited(f"已达到抓取上限（1 小时内最多 {HOURLY_CAP} 篇、24 小时内最多 {DAILY_CAP} 篇），"
-                      f"{when} 之后可以继续。")
-    if budget < limit:
-        progress(f"额度只剩 {budget} 篇，本次只抓 {budget} 篇")
-        limit = budget
+    return lim
+
+
+def search_list(keyword, limit=20, headless=True, progress=print):
+    """Phase 1: the search results list only (titles, authors, likes). No note page is
+    opened, so this doesn't use the page-view budget."""
+    _check_cooldown()
     with browser(headless=headless) as ctx:
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         ok, _ = is_logged_in(page)
@@ -421,26 +447,82 @@ def search(keyword, limit=20, max_comments=20, headless=True, progress=print):
             raise NotLoggedIn("尚未登录小红书，请先运行 login")
         _pause()
         progress(f"搜索「{keyword}」……")
-        items = _search_items(page, keyword, limit)
-        progress(f"找到 {len(items)} 篇笔记")
-        notes = []
+        cards = [_card(it) for it in _search_items(page, keyword, limit)]
+        progress(f"找到 {len(cards)} 篇笔记")
+        return cards
+
+
+CACHE_DAYS = 7
+
+
+def cached_detail(note_id):
+    """An opened copy of this note from the last CACHE_DAYS days, if any."""
+    root = DATA_DIR / "research"
+    if not root.exists():
+        return None
+    cutoff = time.time() - CACHE_DAYS * 86400
+    for f in sorted(root.glob("*/notes.json"), key=lambda f: f.stat().st_mtime, reverse=True):
+        if f.stat().st_mtime < cutoff:
+            break
+        try:
+            for n in json.loads(f.read_text()):
+                # Older sessions have no "opened" flag but do have comments when opened.
+                if n.get("id") == note_id and (n.get("opened") or ("comments" in n and "opened" not in n)):
+                    return n
+        except (ValueError, OSError):
+            continue
+    return None
+
+
+def open_notes(cards, max_comments=20, headless=True, progress=print):
+    """Phase 2: open the chosen notes (body + comments). Each note not in the recent cache
+    costs one page view against the hourly/daily budget. Returns the opened notes."""
+    lim = _check_cooldown()
+    opened, todo = [], []
+    for c in cards:
+        hit = cached_detail(c["id"])
+        if hit:
+            opened.append({**hit, "opened": True, "from_cache": True})
+        else:
+            todo.append(c)
+    if opened:
+        progress(f"{len(opened)} 篇最近打开过，直接用缓存")
+    if not todo:
+        return opened
+    budget = min(lim["hour_left"], lim["day_left"])
+    if budget <= 0:
+        resets = lim.get("day_resets") if not lim["day_left"] else lim.get("hour_resets")
+        when = _hm(resets) if resets else "稍后"
+        raise Limited(f"已达到抓取上限（1 小时内最多 {HOURLY_CAP} 篇、24 小时内最多 {DAILY_CAP} 篇），"
+                      f"{when} 之后可以继续。", opened)
+    if budget < len(todo):
+        progress(f"额度只剩 {budget} 篇，本次只打开 {budget} 篇")
+        todo = todo[:budget]
+    with browser(headless=headless) as ctx:
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        ok, _ = is_logged_in(page)
+        if not ok:
+            raise NotLoggedIn("尚未登录小红书，请先运行 login")
         next_break = random.randint(4, 6)
-        for i, it in enumerate(items, 1):
-            card = it.get("note_card", {})
-            progress(f"[{i}/{len(items)}] {card.get('display_title') or it['id']}")
+        for i, c in enumerate(todo, 1):
+            if i == next_break:  # a longer rest every few notes
+                progress("稍作休息……")
+                _pause(20, 40)
+                next_break += random.randint(4, 6)
+            elif i > 1:
+                _pause(*NOTE_DELAY)
+            progress(f"[{i}/{len(todo)}] {c.get('title') or c['id']}")
             try:
-                notes.append(_note_detail(page, it, max_comments))
+                opened.append({**_note_detail(page, _as_item(c), max_comments), "opened": True})
             except Limited as e:
-                e.notes = notes
+                e.notes = opened
                 raise
             except Exception as e:
                 progress(f"  跳过：{e}")
-            if i == len(items):
-                break
-            if i == next_break:
-                progress("稍作休息，避免访问过快……")
-                _pause(20, 40)
-                next_break += random.randint(4, 6)
-            else:
-                _pause(*NOTE_DELAY)
-        return notes
+    return opened
+
+
+def search(keyword, limit=20, max_comments=20, headless=True, progress=print):
+    """List + open the top `limit` results in one go (CLI `search` / `research`)."""
+    cards = search_list(keyword, limit=limit, headless=headless, progress=progress)
+    return open_notes(cards, max_comments=max_comments, headless=headless, progress=progress)

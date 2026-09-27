@@ -143,7 +143,7 @@ def chat(cid: str):
         for p in msg["parts"]:
             if p["type"] == "text":
                 p["html"] = _md(p["text"])
-            elif p["type"] == "search" and p["status"] == "running":
+            elif p["type"] in ("search", "open") and p["status"] == "running":
                 progress = progress or _running_progress()
                 p["progress"] = progress
         if msg.get("draft"):

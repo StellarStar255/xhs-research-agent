@@ -15,9 +15,11 @@ chosen in the GUI settings (data/settings.json) and fixed per chat:
   Follow-ups: `codex exec resume <codex_thread>`.
 - "api": any OpenAI-compatible API with the user's key (xhs_reader/llm.py), function tools
   wrapping the same CLI; per-turn search/note caps are enforced in code.
-All backends share xhs_reader/agent_prompt.md ({TOOLS}/{DATE}) and llm.TOOLS / TOOLS_TEXT
-(search_xiaohongshu, read_previous_notes, view_note_images); per-turn budgets are keyed by a turn
-id (XHS_TURN_ID) so they hold across the MCP server processes. Chats live in
+All backends share xhs_reader/agent_prompt.md ({TOOLS}/{DATE}) and xhs_reader/tools.py (TOOLS,
+TOOLS_TEXT, ToolRunner with the per-turn budgets): search_xiaohongshu (`xhs find`: results list only,
+no note opened, no page-view budget) → open_notes (`xhs open <sid> N…`: opens chosen notes, ≤6 per
+call / 24 per turn; notes opened in the last 7 days come from the local cache for free) →
+view_note_images; plus read_previous_notes. Image budgets are keyed by a turn id (XHS_TURN_ID). Chats live in
 data/chats/*.json (+ data/chats/<id>/ images), scraped notes in data/research/<id>/.
 Scraper pacing/budgets/cooldown live in scraper.py (`./xhs limits`); they're fixed constants on purpose
 (no env overrides — the usage notice tells users not to get around them). XHS_DATA_DIR is for tests/dev.
@@ -44,13 +46,14 @@ detached helper that swaps the app after it quits. Release assets must keep thei
 
 1. Pick 1–3 good search keywords for the question (Chinese, the way users on XHS phrase things).
 2. For each keyword:
-   `./xhs search "<关键词>" -n 8 -c 20 -q "<用户的问题>"`
-   It prints `SESSION <id>`. Runs headless and deliberately slow (~2–3 min for 8 notes).
+   `./xhs find "<关键词>" -q "<用户的问题>"` prints `SESSION <id>` and the results list
+   (no note opened). Then `./xhs open <id> 2 5 7` opens the 3–5 most relevant ones
+   (headless, deliberately slow, ~10 s per note).
    Keep volume low (≤ ~24 notes per request): it's the user's real account, and viewing too
    many notes in a short time gets it rate-limited (300013 "访问频繁"). Budgets: 60 per rolling hour, 300 per rolling 24 h
    (the one observed block was ~100 views in 40 min with 2–5 s gaps, i.e. ~150/h).
    If it exits with `LIMITED:`, stop and tell the user — never retry around a cooldown.
-3. `./xhs digest <id>` → read the notes & comments.
+3. `./xhs digest <id>` re-prints a session (list + opened notes).
 4. Write the report in Chinese (optionally save as `data/research/<id>/report.md`).
    Structure: 核心结论 → 分主题要点（带具体推荐/数据）→ 争议与避坑（comments are often
    more honest than posts; flag 广告/营销号 suspicion）→ 参考笔记（markdown links with 赞/藏 counts）.
