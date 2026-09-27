@@ -230,7 +230,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
       <textarea id="input" rows="1" placeholder="问点什么，也可以粘贴或拖入图片……"></textarea>
       <button class="send" id="send" disabled>发送</button>
     </div>
-    <div class="hint">助手会放慢速度浏览小红书，减少对平台的访问压力，每次搜索约 2–3 分钟 · 支持粘贴 / 拖入图片 · Enter 发送，Shift+Enter 换行</div>
+    <div class="hint">助手会放慢速度浏览小红书，减少对平台的访问压力，先看搜索列表再挑几篇打开，每篇约 10 秒 · 支持粘贴 / 拖入图片 · Enter 发送，Shift+Enter 换行</div>
   </div>
 </main>
 <div class="drawer" id="drawer">
@@ -353,8 +353,24 @@ setInterval(async () => { try { renderLimits((await api('/api/status')).limits);
 
 
 /* ---------- conversation ---------- */
+// The open chat lives in the URL (#c=<id>) so a page refresh comes back to it,
+// and each chat's scroll position is kept for this tab (sessionStorage).
+function setUrl(id) {
+  const hash = id ? '#c=' + encodeURIComponent(id) : '';
+  if (location.hash !== hash) history.replaceState(null, '', location.pathname + hash);
+}
+function saveScroll() {
+  if (current) try { sessionStorage.setItem('scroll:' + current, String($('#scroll').scrollTop)); } catch {}
+}
+function savedScroll(id) {
+  try { const v = sessionStorage.getItem('scroll:' + id); return v === null ? null : +v; } catch { return null; }
+}
+let scrollSaveTimer;
+$('#scroll').addEventListener('scroll', () => { clearTimeout(scrollSaveTimer); scrollSaveTimer = setTimeout(saveScroll, 200); });
+window.addEventListener('beforeunload', saveScroll);
+
 function newChat() {
-  current = null; lastJson = ''; running = false; clearTimeout(pollTimer);
+  current = null; lastJson = ''; running = false; clearTimeout(pollTimer); setUrl(null);
   if (loggedIn === false) {
     $('#thread').innerHTML = `<div class="hello"><div class="login-card">
       <h2>先登录小红书</h2>
@@ -376,17 +392,23 @@ function newChat() {
 }
 $('#newChat').onclick = newChat;
 
-async function openChat(id) {
+async function openChat(id, restoring = false) {
   const switching = id !== current;
-  if (switching) lastJson = '';
+  if (switching) { saveScroll(); lastJson = ''; }
   current = id;
+  setUrl(id);
   clearTimeout(pollTimer);
   let chat;
   try { chat = await api('/api/chats/' + id); } catch { return newChat(); }
   if (current !== id) return;
   running = chat.running;
   const json = JSON.stringify(chat.messages);
-  if (json !== lastJson) { lastJson = json; renderThread(chat, switching); }
+  if (json !== lastJson) {
+    lastJson = json;
+    const pos = restoring ? savedScroll(id) : null;
+    renderThread(chat, switching && pos === null);
+    if (pos !== null) $('#scroll').scrollTop = pos;
+  }
   updateComposer();
   if (switching) loadChats();
   if (running) pollTimer = setTimeout(() => openChat(id), 1200);
@@ -775,10 +797,12 @@ $('#quit').onclick = async () => {
   document.body.innerHTML = '<div class="bye" style="flex:1"><h2>已退出</h2><p>可以关闭这个页面了。下次双击应用图标即可重新打开。</p></div>';
 };
 
-newChat(); loadStatus();
+const startChat = location.hash.startsWith('#c=') ? decodeURIComponent(location.hash.slice(3)) : null;
+if (startChat) openChat(startChat, true); else newChat();
+loadStatus();
 loadSettings().then(c => {
   if (c.backend === 'api' && !c.api.has_key) openSettings('第一次使用：请选择一个大模型服务商并填写 API Key');
-  else if (location.hash === '#settings') { history.replaceState(null, '', '/'); openSettings(); }
+  else if (location.hash === '#settings') { history.replaceState(null, '', location.pathname); openSettings(); }
 });
 </script>
 </body>
