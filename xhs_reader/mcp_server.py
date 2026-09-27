@@ -56,6 +56,31 @@ def call_tool(name, args):
     return f"没有叫 {name} 的工具。", True
 
 
+def view_images(args):
+    """MCP content for view_note_images: a text line plus the images themselves."""
+    import base64
+    from . import images
+    try:
+        title, paths = images.note_images(str(args.get("session", "")).strip(), int(args.get("note") or 0),
+                                          args.get("limit") or images.MAX_PER_NOTE)
+    except (images.ImageError, ValueError, TypeError) as e:
+        return [{"type": "text", "text": str(e)}], False
+    content = [{"type": "text", "text": f"「{title}」的 {len(paths)} 张图片："}]
+    for p in paths:
+        content.append({"type": "image", "data": base64.b64encode(p.read_bytes()).decode(),
+                        "mimeType": images.MIME.get(p.suffix.lstrip("."), "image/webp")})
+    return content, False
+
+
+def launch_spec(turn_id):
+    """(command, args, env) that starts this server, for the agent CLIs' MCP configs."""
+    env = {"XHS_DATA_DIR": str(paths.DATA_DIR), "XHS_TURN_ID": turn_id}
+    if paths.FROZEN:
+        return str(paths.cli_executable()), ["mcp"], env
+    env["PYTHONPATH"] = str(paths.ROOT)
+    return sys.executable, ["-m", "xhs_reader.cli", "mcp"], env
+
+
 def _tools():
     out = []
     for t in TOOLS:
@@ -82,8 +107,12 @@ def serve():
             result = {"tools": _tools()}
         elif method == "tools/call":
             p = req.get("params") or {}
-            text, is_error = call_tool(p.get("name"), p.get("arguments") or {})
-            result = {"content": [{"type": "text", "text": text}], "isError": bool(is_error)}
+            if p.get("name") == "view_note_images":
+                content, is_error = view_images(p.get("arguments") or {})
+            else:
+                text, is_error = call_tool(p.get("name"), p.get("arguments") or {})
+                content = [{"type": "text", "text": text}]
+            result = {"content": content, "isError": bool(is_error)}
         elif method == "ping":
             result = {}
         else:

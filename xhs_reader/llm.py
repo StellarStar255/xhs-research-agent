@@ -8,6 +8,7 @@ re-inlined as data URLs when sent.
 """
 import base64
 import json
+from pathlib import Path
 import subprocess
 import threading
 import time
@@ -34,19 +35,33 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "session": {"type": "string", "description": "之前搜索结果里给出的 SESSION id"},
         }, "required": ["session"]}}},
+    {"type": "function", "function": {
+        "name": "view_note_images",
+        "description": "查看某篇笔记的图片（很多笔记的内容写在图片里，正文很短）。不打开笔记页面，不占抓取额度。"
+                       "每次最多 4 张，每轮对话最多 12 张。",
+        "parameters": {"type": "object", "properties": {
+            "session": {"type": "string", "description": "搜索结果里给出的 SESSION id"},
+            "note": {"type": "integer", "description": "笔记编号，也就是结果里 [3] 这样的数字"},
+            "limit": {"type": "integer", "description": "要看几张，默认 4，最多 4"},
+        }, "required": ["session", "note"]}}},
 ]
 
-TOOLS_TEXT = f"""你有两个工具：
+TOOLS_TEXT = f"""你有三个工具：
 
 - `search_xiaohongshu(keyword, limit)`：在小红书搜索并抓取笔记（慢）。每轮对话最多调用 {MAX_SEARCHES} 次、合计最多 {MAX_NOTES} 篇。
 - `read_previous_notes(session)`：重新读取之前抓过的笔记，不访问小红书。
+- `view_note_images(session, note, limit)`：查看某篇笔记的图片。结果里标着「正文很短，内容可能在图片里」、
+  而且对回答很重要的笔记，就用它看图（比如价格表、清单、测评对比图）。每次最多 4 张、每轮最多 12 张，只看最关键的几篇。
+  图片链接过一段时间会失效，所以要在抓取后的同一轮里看。
 
 工具返回里的笔记链接可以直接用于引用。"""
 
 
 class ApiRun:
-    def __init__(self, cid):
+    def __init__(self, cid, turn_id=""):
         self.cid = cid
+        self.turn_id = turn_id
+        self.pending_images = []  # paths from view_note_images, sent after the tool results
         self.stopped = False
         self.proc = None
         self.thread = threading.Thread(target=self._main, daemon=True)
@@ -68,8 +83,8 @@ class ApiRun:
             agent.finish(self.cid, stopped=self.stopped, error=None if self.stopped else explain(e))
 
 
-def start(cid):
-    run = ApiRun(cid)
+def start(cid, turn_id=""):
+    run = ApiRun(cid, turn_id)
     run.thread.start()
     return run
 
@@ -114,8 +129,8 @@ def _inline_images(cid, history):
         if isinstance(m.get("content"), list):
             content = []
             for p in m["content"]:
-                if p.get("type") == "image_ref":
-                    f = agent.image_dir(cid) / p["name"]
+                if p.get("type") in ("image_ref", "image_path"):
+                    f = agent.image_dir(cid) / p["name"] if p["type"] == "image_ref" else Path(p["path"])
                     mime = next((k for k, v in agent.EXT.items() if f.suffix == "." + v), "image/png")
                     data = base64.b64encode(f.read_bytes()).decode()
                     content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
@@ -219,6 +234,11 @@ def run_turn(run):
                 result, searches, notes = _call_tool(run, tc, user["text"], searches, notes)
             history.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
             agent.update(cid, save_history)
+        if run.pending_images:  # tool messages can't carry images; send them as a user turn
+            history.append({"role": "user", "content": [{"type": "text", "text": "（以下是 view_note_images 返回的笔记图片）"}]
+                            + [{"type": "image_path", "path": str(p)} for p in run.pending_images]})
+            run.pending_images = []
+            agent.update(cid, save_history)
 
 
 _no_usage_option = set()  # base_urls that rejected stream_options
@@ -264,6 +284,23 @@ def _call_tool(run, tc, question, searches, notes):
         agent.apply_tool_output(step, out, failed)
         agent.update(cid, lambda c, m: _replace_step(m, step))
         return out[-60000:], searches + 1, notes + (step.get("count") or 0)
+
+    if name == "view_note_images":
+        from . import images
+        step = agent.tool_step(name, args, tc["id"])
+        agent.update(cid, lambda c, m: m["parts"].append(step))
+        try:
+            title, paths_ = images.note_images(str(args.get("session", "")).strip(), int(args.get("note") or 0),
+                                               args.get("limit") or images.MAX_PER_NOTE, turn_id=run.turn_id)
+        except (images.ImageError, ValueError, TypeError) as e:
+            agent.apply_images_output(step, str(e), 0)
+            agent.update(cid, lambda c, m: _replace_step(m, step))
+            return str(e), searches, notes
+        run.pending_images += paths_
+        text = f"「{title}」的 {len(paths_)} 张图片已附在下一条消息里。"
+        agent.apply_images_output(step, text, len(paths_))
+        agent.update(cid, lambda c, m: _replace_step(m, step))
+        return text, searches, notes
 
     if name == "read_previous_notes":
         sid = str(args.get("session", "")).strip()

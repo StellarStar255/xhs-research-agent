@@ -79,6 +79,10 @@ def cmd_digest(a):
     for i, n in enumerate(notes, 1):
         print(f"## [{i}] {n.get('title')}  | 作者 {n.get('author')} | {n.get('time', '')}")
         print(f"赞 {n.get('liked', 0)} 藏 {n.get('collected', 0)} 评 {n.get('comment_count', 0)} | {n.get('url')}")
+        n_img = len(n.get("images") or [])
+        if n_img:
+            short = len((n.get("desc") or "").strip()) < 150
+            print(f"图片 {n_img} 张" + ("（正文很短，内容可能在图片里）" if short and n.get("type") != "video" else ""))
         if n.get("tags"):
             print("标签: " + " ".join(n["tags"]))
         if n.get("desc"):
@@ -117,6 +121,10 @@ def main(argv=None):
     sub.add_parser("limits", help="show cooldown and remaining budget")
     sub.add_parser("selftest", help="check HTTPS and that the bundled driver can start the local browser")
     sub.add_parser("mcp", help="run the scraper as an MCP server on stdio (used by the Codex backend)")
+    im = sub.add_parser("images", help="download a note's images (from a digest) and print their paths")
+    im.add_argument("session")
+    im.add_argument("note", type=int, help="note number as shown in the digest, e.g. 3 for [3]")
+    im.add_argument("-n", "--limit", type=int, default=4)
     a = ap.parse_args(argv)
 
     if a.cmd == "login":
@@ -130,6 +138,16 @@ def main(argv=None):
         cmd_research(a)
     elif a.cmd == "digest":
         cmd_digest(a)
+    elif a.cmd == "images":
+        from . import images
+        try:
+            title, paths = images.note_images(a.session, a.note, a.limit)
+        except images.ImageError as e:
+            print(f"IMAGES_ERROR: {e}")
+            sys.exit(1)
+        print(f"IMAGES {len(paths)} 「{title}」")
+        for p in paths:
+            print(f"IMAGE {p}")
     elif a.cmd == "mcp":
         from .mcp_server import serve
         serve()

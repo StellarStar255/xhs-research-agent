@@ -10,7 +10,6 @@ Follow-up turns continue the Codex thread with `codex exec resume <thread_id>`.
 import json
 import os
 import subprocess
-import sys
 import threading
 from pathlib import Path
 
@@ -54,13 +53,9 @@ class CodexRun:
             procutil.kill_tree(self.proc)
 
 
-def _mcp_config():
-    if paths.FROZEN:
-        command, args = str(paths.cli_executable()), ["mcp"]
-        env = {"XHS_DATA_DIR": str(paths.DATA_DIR)}
-    else:
-        command, args = sys.executable, ["-m", "xhs_reader.cli", "mcp"]
-        env = {"XHS_DATA_DIR": str(paths.DATA_DIR), "PYTHONPATH": str(paths.ROOT)}
+def _mcp_config(turn_id):
+    from .mcp_server import launch_spec
+    command, args, env = launch_spec(turn_id)
     env_toml = "{" + ", ".join(f"{k}={_toml(v)}" for k, v in env.items()) + "}"
     return ["-c", f"mcp_servers.xhs.command={_toml(command)}",
             "-c", f"mcp_servers.xhs.args={_toml(args)}",
@@ -70,7 +65,7 @@ def _mcp_config():
             "-c", "mcp_servers.xhs.tool_timeout_sec=900"]
 
 
-def start(chat, text, image_names):
+def start(chat, text, image_names, turn_id=""):
     codex = settings.find_codex() or "codex"
     thread = chat.get("codex_thread")
     cmd = [codex, "exec"] + (["resume", thread] if thread else []) + [
@@ -80,7 +75,7 @@ def start(chat, text, image_names):
     ]
     for feature in _features_to_disable(codex):
         cmd += ["--disable", feature]
-    cmd += _mcp_config()
+    cmd += _mcp_config(turn_id)
     for name in image_names or []:
         cmd += ["-i", str(agent.image_dir(chat["id"]) / name)]
     cmd.append(text or agent.DEFAULT_IMAGE_PROMPT)
@@ -121,14 +116,8 @@ def _handle(chat, msg, ev):
     elif kind == "agent_message" and t == "item.completed" and (item.get("text") or "").strip():
         msg["parts"].append({"type": "text", "text": item["text"]})
     elif kind == "mcp_tool_call":
-        args = item.get("arguments") or {}
         if t == "item.started":
-            if item.get("tool") == "search_xiaohongshu":
-                msg["parts"].append({"type": "search", "keyword": str(args.get("keyword", "")),
-                                     "tool_id": item.get("id"), "status": "running"})
-            else:
-                msg["parts"].append({"type": "read", "session": str(args.get("session", "")),
-                                     "tool_id": item.get("id"), "status": "running"})
+            msg["parts"].append(agent.tool_step(item.get("tool", ""), item.get("arguments") or {}, item.get("id")))
         elif t == "item.completed":
             step = next((p for p in msg["parts"] if p.get("tool_id") == item.get("id")), None)
             if step:
@@ -136,6 +125,10 @@ def _handle(chat, msg, ev):
                     text, is_error = _tool_text(item)
                     if step["type"] == "search":
                         agent.apply_tool_output(step, text, is_error)
+                    elif step["type"] == "images":
+                        n = sum(1 for c in (item.get("result") or {}).get("content") or []
+                                if isinstance(c, dict) and c.get("type") == "image")
+                        agent.apply_images_output(step, text, n, is_error)
                     else:
                         step["status"] = "error" if is_error else "done"
                 else:

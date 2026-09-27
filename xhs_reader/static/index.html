@@ -402,6 +402,14 @@ function renderStep(p) {
       : `<span class="prog" title="${esc(p.error || '')}">搜索失败</span>`;
     return `<div class="step ${p.status === 'error' ? 'err' : ['limited', 'login'].includes(p.status) ? 'warn' : ''}" title="${esc(p.error || '')}">${icon} 在小红书搜索 <span class="kw">「${esc(p.keyword)}」</span>${right}</div>`;
   }
+  if (p.type === 'images') {
+    const icon = p.status === 'running' ? '<span class="spin"></span>' : p.status === 'done' ? '🖼' : '✗';
+    const what = p.title ? `「${esc(p.title)}」` : `第 ${esc(p.note)} 篇笔记`;
+    const right = p.status === 'running' ? '<span class="prog">下载图片…</span>'
+      : p.status === 'done' ? `<span class="prog">${p.count} 张</span>`
+      : `<span class="prog" title="${esc(p.error || '')}">${esc((p.error || '没看成').slice(0, 30))}</span>`;
+    return `<div class="step ${p.status === 'error' ? 'warn' : ''}">${icon} 查看笔记图片 <span class="kw">${what}</span>${right}</div>`;
+  }
   if (p.type === 'read') {
     return `<div class="step">${p.status === 'running' ? '<span class="spin"></span>' : '📖'} 重新阅读之前的笔记
       ${p.session ? `<button class="view" data-session="${esc(p.session)}">查看 →</button>` : ''}</div>`;

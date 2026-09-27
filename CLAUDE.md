@@ -5,7 +5,8 @@
 
 Main product: a local chat GUI (`./start.sh` → http://localhost:8766). Two answer backends,
 chosen in the GUI settings (data/settings.json) and fixed per chat:
-- "claude": `claude -p` headless (xhs_reader/agent.py), may only run `./xhs research|digest`.
+- "claude": `claude -p` headless (xhs_reader/agent.py) with NO built-in tools (`--tools ""`; Read
+  can't be confined to a folder) and only our MCP server (`--mcp-config`, `mcp__xhs`).
   XHS_AGENT_MODEL=sonnet for faster turns.
 - "codex": `codex exec --json` (xhs_reader/codex_backend.py). Codex can't be limited to
   specific commands, so it gets no shell (--disable shell_tool etc., --ignore-user-config,
@@ -14,7 +15,9 @@ chosen in the GUI settings (data/settings.json) and fixed per chat:
   Follow-ups: `codex exec resume <codex_thread>`.
 - "api": any OpenAI-compatible API with the user's key (xhs_reader/llm.py), function tools
   wrapping the same CLI; per-turn search/note caps are enforced in code.
-Both share xhs_reader/agent_prompt.md ({TOOLS}/{DATE} placeholders). Chats live in
+All backends share xhs_reader/agent_prompt.md ({TOOLS}/{DATE}) and llm.TOOLS / TOOLS_TEXT
+(search_xiaohongshu, read_previous_notes, view_note_images); per-turn budgets are keyed by a turn
+id (XHS_TURN_ID) so they hold across the MCP server processes. Chats live in
 data/chats/*.json (+ data/chats/<id>/ images), scraped notes in data/research/<id>/.
 Scraper pacing/budgets/cooldown live in scraper.py (`./xhs limits`); they're fixed constants on purpose
 (no env overrides — the usage notice tells users not to get around them). XHS_DATA_DIR is for tests/dev.

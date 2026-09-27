@@ -88,22 +88,3 @@ def child_env(extra=None):
         env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), os.environ.get("PYTHONPATH")]))
     env.update(extra or {})
     return env
-
-
-def xhs_script():
-    """A shell script that runs the CLI, for the Claude Code backend.
-
-    Claude Code only gets permission to run commands starting with this path, so it
-    must be a single space-free token. In a source checkout that's the repo's ./xhs;
-    in the packaged app we write one into the data dir.
-    """
-    if not FROZEN:
-        return (ROOT / "xhs").as_posix()
-    script = DATA_DIR / "bin" / "xhs"
-    exe = cli_executable().as_posix()
-    body = f'#!/bin/sh\nXHS_DATA_DIR="{DATA_DIR.as_posix()}" PYTHONUTF8=1 exec "{exe}" "$@"\n'
-    if not script.exists() or script.read_text() != body:
-        script.parent.mkdir(parents=True, exist_ok=True)
-        script.write_text(body)
-        script.chmod(0o755)
-    return script.as_posix()

@@ -15,7 +15,6 @@ import base64
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import threading
@@ -32,14 +31,6 @@ EXT = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif
 DEFAULT_IMAGE_PROMPT = "请看看这张图片，结合小红书上的信息帮我分析一下。"
 
 _TEMPLATE = (Path(__file__).parent / "agent_prompt.md").read_text()
-CLAUDE_TOOLS = """抓取命令（通过 Bash 运行，每次把 timeout 设为 600000）：
-
-```
-{XHS} research "<搜索关键词>" -q "<用户的原始问题>" [-n 笔记数，默认8] [-c 每篇评论数，默认15]
-```
-
-它会输出 `SESSION <id>` 以及每篇笔记的标题、作者、日期、赞/藏/评数、链接、正文和热门评论。
-之前抓过的结果可以用 `{XHS} digest <id>` 重新读取，不必重新抓。"""
 
 
 def system_prompt(tools_text):
@@ -164,13 +155,14 @@ def send(cid, text, images=()):
         _save(chat)
 
         backend = chat.get("backend", "claude")
+        turn_id = uuid.uuid4().hex  # scopes per-turn budgets (searches, images) across processes
         if backend == "api":
-            _runs[cid] = llm.start(cid)
+            _runs[cid] = llm.start(cid, turn_id)
         elif backend == "codex":
             from . import codex_backend
-            _runs[cid] = codex_backend.start(chat, text, names)
+            _runs[cid] = codex_backend.start(chat, text, names, turn_id)
         else:
-            _runs[cid] = _start_claude(chat, text, images)
+            _runs[cid] = _start_claude(chat, text, images, turn_id)
     return cid
 
 
@@ -230,7 +222,7 @@ def _user_images(cid, names):
     return out
 
 
-def _start_claude(chat, text, images):
+def _start_claude(chat, text, images, turn_id=""):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if chat.get("claude_session") and not _ensure_resumable(chat["claude_session"], DATA_DIR):
         chat["claude_session"] = None  # the old session is gone: carry the context over as text
@@ -242,16 +234,20 @@ def _start_claude(chat, text, images):
     content = [{"type": "image", "source": {"type": "base64", "media_type": i["media_type"], "data": i["data"]}}
                for i in images]
     content.append({"type": "text", "text": text or DEFAULT_IMAGE_PROMPT})
-    xhs = paths.xhs_script()
+    from .llm import TOOLS_TEXT
+    from .mcp_server import launch_spec
+    command, args, mcp_env = launch_spec(turn_id or uuid.uuid4().hex)
+    mcp_config = json.dumps({"mcpServers": {"xhs": {"command": command, "args": args, "env": mcp_env}}})
+    # No built-in tools at all (no Bash, no Read: Read can't be confined to a folder); the
+    # only tools are our MCP server's, which enforce the per-turn budgets themselves.
     cmd = [settings.find_claude() or "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-           "--include-partial-messages", "--system-prompt", system_prompt(CLAUDE_TOOLS.replace("{XHS}", xhs)),
-           "--tools", "Bash", "--allowedTools", f"Bash({xhs} research:*)", f"Bash({xhs} digest:*)",
-           "--strict-mcp-config"]
+           "--include-partial-messages", "--system-prompt", system_prompt(TOOLS_TEXT),
+           "--tools", "", "--mcp-config", mcp_config, "--strict-mcp-config", "--allowedTools", "mcp__xhs"]
     if MODEL:
         cmd += ["--model", MODEL]
     if chat.get("claude_session"):
         cmd += ["--resume", chat["claude_session"]]
-    env = paths.child_env({"BASH_DEFAULT_TIMEOUT_MS": "600000", "BASH_MAX_TIMEOUT_MS": "900000"})
+    env = paths.child_env({"MCP_TIMEOUT": "60000", "MCP_TOOL_TIMEOUT": "900000"})  # searches take minutes
     env.pop("CLAUDECODE", None)
     # claude may be installed via node; make sure its own bin dir is on PATH.
     env["PATH"] = os.pathsep.join([str(Path(cmd[0]).parent), env.get("PATH", "")])
@@ -285,22 +281,30 @@ def apply_tool_output(step, out, is_error=False):
             step["error"] = out[-300:]
 
 
-def _tool_step(block):
-    command = (block.get("input") or {}).get("command", "")
-    try:
-        args = shlex.split(command)
-    except ValueError:
-        args = command.split()
-    step = {"tool_id": block.get("id"), "status": "running"}
-    if "research" in args:
-        i = args.index("research")
-        step.update(type="search", keyword=args[i + 1] if i + 1 < len(args) else "")
-    elif "digest" in args:
-        i = args.index("digest")
-        step.update(type="read", session=args[i + 1] if i + 1 < len(args) else "")
+def tool_step(name, args, tool_id):
+    """UI step for one of our tools (MCP name prefixes like mcp__xhs__ are stripped)."""
+    name = name.rsplit("__", 1)[-1]
+    step = {"tool_id": tool_id, "status": "running"}
+    if name == "search_xiaohongshu":
+        step.update(type="search", keyword=str(args.get("keyword", "")))
+    elif name == "read_previous_notes":
+        step.update(type="read", session=str(args.get("session", "")))
+    elif name == "view_note_images":
+        step.update(type="images", session=str(args.get("session", "")), note=args.get("note"))
     else:
-        step.update(type="tool", command=command[:120])
+        step.update(type="tool", command=name[:120])
     return step
+
+
+def apply_images_output(step, text, n_images, is_error=False):
+    """Fill a view_note_images step: the tool's first text line holds 「title」."""
+    m = re.search(r"「(.+?)」", text or "")
+    if m:
+        step["title"] = m.group(1)
+    step["count"] = n_images
+    step["status"] = "done" if n_images and not is_error else "error"
+    if not n_images:
+        step["error"] = (text or "").strip()[:200]
 
 
 def _result_text(block):
@@ -346,7 +350,7 @@ def _handle(chat, msg, ev):
                 msg["draft"] = ""
             elif b.get("type") == "tool_use":
                 msg["draft"] = ""
-                msg["parts"].append(_tool_step(b))
+                msg["parts"].append(tool_step(b.get("name", ""), b.get("input") or {}, b.get("id")))
     elif t == "user":
         content = (ev.get("message") or {}).get("content")
         for b in content if isinstance(content, list) else []:
@@ -354,7 +358,12 @@ def _handle(chat, msg, ev):
                 continue
             for p in msg["parts"]:
                 if p.get("tool_id") == b.get("tool_use_id"):
-                    apply_tool_output(p, _result_text(b), b.get("is_error"))
+                    if p["type"] == "images":
+                        c = b.get("content")
+                        n = sum(1 for x in c if isinstance(x, dict) and x.get("type") == "image") if isinstance(c, list) else 0
+                        apply_images_output(p, _result_text(b), n, b.get("is_error"))
+                    else:
+                        apply_tool_output(p, _result_text(b), b.get("is_error"))
     elif t == "result":
         msg["draft"] = ""
         if ev.get("session_id"):
