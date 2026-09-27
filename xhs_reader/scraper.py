@@ -30,7 +30,7 @@ ME_API = "/api/sns/web/v2/user/me"
 # gets the account rate-limited by the site (error 300013 "访问频繁").
 NOTE_DELAY = (6, 12)   # seconds between notes
 HOURLY_CAP = 40
-DAILY_CAP = 150
+DAILY_CAP = 300
 COOLDOWN_H = 3         # hours to pause after the site says we're too frequent
 USAGE_FILE = DATA_DIR / "usage.json"        # timestamps of note-detail views
 COOLDOWN_FILE = DATA_DIR / "cooldown.json"  # {"until": ts, "reason": ...}
@@ -66,7 +66,8 @@ def _record_view():
 
 
 def limits():
-    """Current cooldown and remaining note-view budget."""
+    """Current cooldown and remaining note-view budget. Both windows roll: "hour" is the
+    last 60 minutes and "day" the last 24 hours, not the clock hour or calendar day."""
     stamps, now = _usage(), time.time()
     hour_used = sum(t > now - 3600 for t in stamps)
     out = {"hour_left": max(0, HOURLY_CAP - hour_used), "day_left": max(0, DAILY_CAP - len(stamps)),
@@ -80,6 +81,8 @@ def limits():
         pass
     if out["hour_left"] == 0 and stamps:
         out["hour_resets"] = min(t for t in stamps if t > now - 3600) + 3600
+    if out["day_left"] == 0 and stamps:
+        out["day_resets"] = min(stamps) + 86400  # when the oldest counted view drops out
     return out
 
 
@@ -404,8 +407,10 @@ def search(keyword, limit=20, max_comments=20, headless=True, progress=print):
         raise Limited(f"小红书提示访问过于频繁，已暂停抓取，{_hm(lim['cooldown_until'])} 之后再试。")
     budget = min(lim["hour_left"], lim["day_left"])
     if budget <= 0:
-        when = _hm(lim["hour_resets"]) if lim["day_left"] and lim.get("hour_resets") else "明天"
-        raise Limited(f"已达到抓取上限（每小时 {HOURLY_CAP} 篇 / 每天 {DAILY_CAP} 篇），{when} 之后可以继续。")
+        resets = lim.get("day_resets") if not lim["day_left"] else lim.get("hour_resets")
+        when = _hm(resets) if resets else "稍后"
+        raise Limited(f"已达到抓取上限（1 小时内最多 {HOURLY_CAP} 篇、24 小时内最多 {DAILY_CAP} 篇），"
+                      f"{when} 之后可以继续。")
     if budget < limit:
         progress(f"额度只剩 {budget} 篇，本次只抓 {budget} 篇")
         limit = budget

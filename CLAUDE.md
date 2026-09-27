@@ -44,7 +44,7 @@ detached helper that swaps the app after it quits. Release assets must keep thei
    `./xhs search "<关键词>" -n 8 -c 20 -q "<用户的问题>"`
    It prints `SESSION <id>`. Runs headless and deliberately slow (~2–3 min for 8 notes).
    Keep volume low (≤ ~24 notes per request): it's the user's real account, and viewing too
-   many notes in a short time gets it rate-limited (300013 "访问频繁"). Budgets: 40/h, 150/day.
+   many notes in a short time gets it rate-limited (300013 "访问频繁"). Budgets: 40 per rolling hour, 300 per rolling 24 h.
    If it exits with `LIMITED:`, stop and tell the user — never retry around a cooldown.
 3. `./xhs digest <id>` → read the notes & comments.
 4. Write the report in Chinese (optionally save as `data/research/<id>/report.md`).

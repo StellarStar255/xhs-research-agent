@@ -343,7 +343,7 @@ function renderLimits(l) {
   if (!l) return;
   el.className = 'limits' + (l.cooldown_until ? ' cool' : '');
   el.textContent = l.cooldown_until ? `⚠ 小红书提示访问过于频繁，已暂停，${hm(l.cooldown_until)} 后恢复`
-    : `抓取额度：本小时剩 ${l.hour_left}/${l.hour_cap} 篇 · 今天剩 ${l.day_left}/${l.day_cap} 篇`;
+    : `抓取额度：1 小时内剩 ${l.hour_left}/${l.hour_cap} 篇 · 24 小时内剩 ${l.day_left}/${l.day_cap} 篇`;
 }
 setInterval(async () => { try { renderLimits((await api('/api/status')).limits); } catch {} }, 60000);
 
