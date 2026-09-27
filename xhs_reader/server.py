@@ -75,6 +75,11 @@ def icon():
     return FileResponse(Path(__file__).parent / "static" / "icon.png")
 
 
+@app.get("/favicon.ico")
+def favicon():
+    return FileResponse(Path(__file__).parent / "static" / "favicon.ico", media_type="image/x-icon")
+
+
 @app.get("/api/chats")
 def chats():
     return agent.list_chats()

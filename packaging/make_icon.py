@@ -122,6 +122,7 @@ def main():
     img = draw()
     img.save(HERE / "icon.png")
     img.resize((256, 256), Image.LANCZOS).save(HERE.parent / "xhs_reader" / "static" / "icon.png")
+    img.save(HERE.parent / "xhs_reader" / "static" / "favicon.ico", sizes=[(16, 16), (32, 32), (48, 48), (64, 64)])
     img.save(HERE / "icon.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
     if sys.platform == "darwin" and shutil.which("iconutil"):
         iconset = HERE / "icon.iconset"
