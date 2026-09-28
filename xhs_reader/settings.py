@@ -126,6 +126,10 @@ def load():
     s.setdefault("web_search", False)
     # Claude Code model: "" = Claude Code's own default, or an alias like "sonnet" / "opus".
     s.setdefault("claude_model", "")
+    # Phone access over the local network (xhs_reader/remote.py); off by default.
+    mobile = s.setdefault("mobile", {})
+    mobile.setdefault("enabled", False)
+    mobile.setdefault("token", "")
     if s["claude_model"] not in CLAUDE_MODELS:
         s["claude_model"] = ""
     if s["browser_window"] == "offscreen":  # v0.1.11 name

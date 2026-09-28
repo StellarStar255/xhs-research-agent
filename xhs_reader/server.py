@@ -6,12 +6,80 @@ import time
 from pathlib import Path
 
 import markdown
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import agent, paths, procutil, scraper, settings, store, updater
+from . import agent, paths, procutil, remote, scraper, settings, store, updater
 app = FastAPI()
+
+# What a phone (remote client, see remote.py) may not do: these stay on the computer.
+REMOTE_DENY_POST = ("/api/shutdown", "/api/settings", "/api/update/start", "/api/ui", "/api/browser-window",
+                    "/api/web-search", "/api/login")
+LOCKED_PAGE = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小红书调研助手</title><body style="font:16px/1.7 -apple-system,sans-serif;padding:40px 24px;text-align:center">
+<h2>需要扫码连接</h2><p>请在电脑上打开「设置 → 手机访问」，用手机扫描那里的二维码。</p></body>"""
+
+
+@app.middleware("http")
+async def remote_guard(request: Request, call_next):
+    if not remote.is_remote(request.scope):
+        return await call_next(request)
+    from_query = request.query_params.get("k")
+    if not (remote.key_ok(from_query) or remote.key_ok(request.cookies.get(remote.COOKIE))):
+        return HTMLResponse(LOCKED_PAGE, status_code=401)
+    path = request.url.path
+    if path.startswith("/api/mobile") or (request.method != "GET" and path.startswith(REMOTE_DENY_POST)):
+        return JSONResponse({"detail": "这个操作只能在电脑上进行"}, status_code=403)
+    response = await call_next(request)
+    if remote.key_ok(from_query):
+        response.set_cookie(remote.COOKIE, from_query, max_age=400 * 86400, httponly=True, samesite="lax")
+    return response
+
+
+@app.get("/api/client")
+def client(request: Request):
+    return {"remote": remote.is_remote(request.scope)}
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    # No start_url: a home-screen shortcut opens the address it was added from (with its key).
+    return JSONResponse({"name": "小红书调研助手", "short_name": "调研助手", "display": "standalone",
+                         "background_color": "#161617", "theme_color": "#ff2442",
+                         "icons": [{"src": "/icon.png", "sizes": "256x256", "type": "image/png"}]},
+                        media_type="application/manifest+json")
+
+
+class MobileReq(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/mobile")
+def mobile_status():
+    m = remote.conf()
+    out = {"enabled": m["enabled"], "port": remote.running_port(), "url": None, "qr": None}
+    if m["enabled"]:
+        out["url"] = remote.url()
+        out["qr"] = remote.qr_svg(out["url"]) if out["url"] else None
+        if not out["url"]:
+            out["error"] = "没有找到这台电脑的局域网地址，请确认已连接 Wi-Fi 或网线"
+    return out
+
+
+@app.post("/api/mobile")
+def mobile_set(req: MobileReq):
+    try:
+        remote.set_enabled(req.enabled)
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+    return mobile_status()
+
+
+@app.post("/api/mobile/reset")
+def mobile_reset():
+    remote.reset_key()
+    return mobile_status()
 _status = {"at": 0, "value": None}
 _login = {"proc": None, "state": "idle", "message": ""}
 

@@ -2,7 +2,12 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="调研助手">
+<meta name="theme-color" content="#ff2442">
+<link rel="manifest" href="/manifest.webmanifest">
 <meta name="referrer" content="no-referrer">
 <title>小红书调研助手</title>
 <!-- ?v= busts browsers' favicon cache (early versions had no icon, and that got cached) -->
@@ -206,6 +211,41 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .desc { white-space: pre-wrap; }
 .cmt { border-top: 1px solid var(--line); padding: 7px 0; font-size: 13px; }
 .cmt .u { color: var(--muted); } .cmt .r { margin-left: 16px; color: var(--muted); font-size: 12px; }
+.mobile-qr { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.mobile-qr svg { width: 180px; height: 180px; border-radius: 8px; flex-shrink: 0; }
+.mobile-qr .u { font-size: 12px; color: var(--muted); word-break: break-all; }
+
+/* phone access (remote clients can't change settings or quit; see server.py) */
+.remote #quit, .remote #updBanner, .remote #loginBtn, .remote .step .login-btn { display: none !important; }
+
+/* phone layout: the sidebar becomes a slide-in menu */
+.topbar, .backdrop { display: none; }
+@media (max-width: 760px) {
+  body { height: 100dvh; }
+  aside { position: fixed; z-index: 8; top: 0; bottom: 0; left: 0; width: min(300px, 84vw); transform: translateX(-100%);
+          transition: transform .2s; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+  body.side-open aside { transform: none; }
+  body.side-open .backdrop { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 7; }
+  .topbar { display: flex; align-items: center; gap: 6px; padding: calc(6px + env(safe-area-inset-top)) 8px 6px;
+            border-bottom: 1px solid var(--line); background: var(--bg); }
+  .topbar button { border: 0; background: none; color: var(--ink); font-size: 22px; padding: 2px 10px; line-height: 1.4; }
+  .tb-title { flex: 1; min-width: 0; font-weight: 600; font-size: 15px; text-align: center;
+              white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .thread { padding: 14px 14px 28px; }
+  .hello { margin-top: 5vh; } .hello h1 { font-size: 21px; } .hello p { margin-bottom: 18px; }
+  .examples { grid-template-columns: 1fr; }
+  .msg { gap: 8px; } .msg .avatar { display: none; }
+  .msg.user .col { max-width: 88%; }
+  .composer { padding: 6px 10px calc(10px + env(safe-area-inset-bottom)); }
+  .hint { display: none; }
+  .box textarea { font-size: 16px; }  /* smaller text makes iOS zoom in on focus */
+  .modal { align-items: flex-end; }
+  .sheet { width: 100vw; max-height: 92dvh; border-radius: 16px 16px 0 0; padding: 18px 16px calc(18px + env(safe-area-inset-bottom)); }
+  .settings .seg { grid-template-columns: 1fr; }
+  .drawer { width: 100vw; padding-top: env(safe-area-inset-top); }
+  .grid { grid-template-columns: repeat(2, 1fr); padding: 12px; gap: 10px; }
+}
+@media (hover: none) { .chat-item .x { visibility: visible; } }
 </style>
 </head>
 <body>
@@ -220,7 +260,10 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   <div class="foot"><button class="gear" id="gear">⚙ 设置 · <span id="backendLabel">…</span></button>
     <button class="gear quit" id="quit" title="关闭后台服务">退出</button></div>
 </aside>
+<div class="backdrop" id="backdrop"></div>
 <main>
+  <div class="topbar"><button id="menuBtn" aria-label="对话列表">☰</button><span class="tb-title" id="tbTitle">小红书调研助手</span>
+    <button id="tbNew" aria-label="新对话">＋</button></div>
   <div id="scroll"><div class="thread" id="thread"></div></div>
   <div class="composer">
     <div class="box">
@@ -300,7 +343,7 @@ function setLogin(ok, nickname) {
   const was = loggedIn;
   loggedIn = ok;
   $('#dot').className = 'dot ' + (ok ? 'on' : 'off');
-  $('#loginText').textContent = ok ? `已登录：${nickname || ''}` : '未登录小红书';
+  $('#loginText').textContent = ok ? `已登录：${nickname || ''}` : (REMOTE ? '未登录，请在电脑上扫码登录' : '未登录小红书');
   $('#loginBtn').hidden = !!ok;
   if (was !== ok && current === null) newChat();  // swap the welcome screen / login card
 }
@@ -325,6 +368,7 @@ function loginState(text, cls) {
   if (el) { el.textContent = text; el.className = 'state ' + (cls || ''); }
 }
 async function startLogin() {
+  if (REMOTE) { loginState('请在电脑上打开助手，点「扫码登录」，用小红书 App 扫描电脑上的二维码。', 'err-text'); return; }
   document.querySelectorAll('[data-login]').forEach(b => b.disabled = true);
   try { await api('/api/login', {method: 'POST'}); }
   catch (e) { loginState('打开登录窗口失败：' + e.message, 'err-text'); return; }
@@ -357,7 +401,7 @@ setInterval(async () => { try { renderLimits((await api('/api/status')).limits);
 // and each chat's scroll position is kept for this tab (sessionStorage).
 function setUrl(id) {
   const hash = id ? '#c=' + encodeURIComponent(id) : '';
-  if (location.hash !== hash) history.replaceState(null, '', location.pathname + hash);
+  if (location.hash !== hash) history.replaceState(null, '', location.pathname + location.search + hash);
 }
 function saveScroll() {
   if (current) try { sessionStorage.setItem('scroll:' + current, String($('#scroll').scrollTop)); } catch {}
@@ -371,6 +415,7 @@ window.addEventListener('beforeunload', saveScroll);
 
 function newChat() {
   current = null; lastJson = ''; running = false; clearTimeout(pollTimer); setUrl(null);
+  $('#tbTitle').textContent = '小红书调研助手';
   if (loggedIn === false) {
     $('#thread').innerHTML = `<div class="hello"><div class="login-card">
       <h2>先登录小红书</h2>
@@ -401,6 +446,7 @@ async function openChat(id, restoring = false) {
   let chat;
   try { chat = await api('/api/chats/' + id); } catch { return newChat(); }
   if (current !== id) return;
+  $('#tbTitle').textContent = chat.title || '小红书调研助手';
   running = chat.running;
   const json = JSON.stringify(chat.messages);
   if (json !== lastJson) {
@@ -577,7 +623,7 @@ $('#send').onclick = async () => {
 function autosize() { const t = $('#input'); t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; updateComposer(); }
 $('#input').oninput = autosize;
 $('#input').onkeydown = e => {
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !TOUCH) { e.preventDefault(); send(); }
 };
 
 /* ---------- notes drawer ---------- */
@@ -649,9 +695,22 @@ function showProviderNote() {
 }
 async function openSettings(message) {
   await loadSettings();
+  if (REMOTE) {
+    $('#sheet').innerHTML = `<div class="settings">
+      <button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button>
+      <h2>设置</h2>
+      <p>现在用的是：<b>${esc($('#backendLabel').textContent)}</b>${conf.claude_model && conf.backend === 'claude' ? ' · ' + esc(conf.claude_model) : ''}
+        · 联网搜索${conf.web_search ? '已开启' : '未开启'}</p>
+      <p class="note">这是手机访问模式。修改设置、登录小红书、更新和退出，请在电脑上进行。</p>
+      <p class="note"><a href="#" id="sNotice">查看使用须知</a> · 本项目与小红书没有任何关联</p></div>`;
+    $('#sNotice').onclick = e => { e.preventDefault(); $('#modal').classList.remove('show'); showNotice(true); };
+    $('#modal').classList.add('show');
+    return;
+  }
   const a = conf.api;
   const ui = await api('/api/ui').catch(() => ({native: false}));
   const bw = await api('/api/browser-window').catch(() => ({mode: 'background', platform: ''}));
+  let mob = await api('/api/mobile').catch(() => ({enabled: false}));
   $('#sheet').innerHTML = `<div class="settings">
     <button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button>
     <h2>设置</h2>
@@ -668,6 +727,10 @@ async function openSettings(message) {
       <label class="opt ${bw.mode === 'visible' ? 'on' : ''}"><input type="radio" name="bwmode" value="visible" ${bw.mode === 'visible' ? 'checked' : ''}>
         <div>显示浏览器窗口<small>抓取时显示 Chrome 窗口，可以看到助手的每一步操作</small></div></label>
     </div>
+    <h3>手机访问</h3>
+    <label class="opt ${mob.enabled ? 'on' : ''}"><input type="checkbox" id="sMobile" ${mob.enabled ? 'checked' : ''}>
+      <div>允许同一 Wi-Fi 下的手机访问<small>打开后用手机扫描二维码即可使用；电脑需要开着这个应用。手机上不能修改设置、登录或退出</small></div></label>
+    <div id="sMobileBox"></div>
     <h3>联网搜索</h3>
     <label class="opt ${conf.web_search ? 'on' : ''}"><input type="checkbox" id="sWeb" ${conf.web_search ? 'checked' : ''}>
       <div>允许联网搜索<small>只用来查官方价格、参数、营业时间等客观信息，网页来源会标 🌐；真实体验仍以小红书为主。仅 Claude Code 和 Codex 支持，使用你自己的订阅额度</small></div></label>
@@ -709,6 +772,25 @@ async function openSettings(message) {
     try { await api('/api/browser-window', {method: 'POST', body: JSON.stringify({mode: r.value})}); out('抓取方式已切换，下次抓取时生效', true); }
     catch (e) { out(e.message, false); }
   });
+  const renderMobile = () => {
+    $('#sMobileBox').innerHTML = !mob.enabled ? '' : mob.error ? `<p class="err-text" style="font-size:13px">${esc(mob.error)}</p>`
+      : `<div class="mobile-qr">${mob.qr || ''}<div>
+          <p style="margin:0 0 6px">用手机相机或微信扫码打开（手机要和电脑连同一个 Wi-Fi）。<br>打开后可以用浏览器的「添加到主屏幕」，像 App 一样使用。</p>
+          <p class="u">${esc(mob.url || '')}</p>
+          <button class="btn" id="sMobileReset">重置密钥</button>
+          <small class="note" style="display:block;margin-top:4px">二维码里带有访问密钥，不要发给别人；重置后所有手机都要重新扫码。
+          第一次打开时 macOS 可能会询问是否允许「传入连接」，请选允许。</small></div></div>`;
+    const rs = document.getElementById('sMobileReset');
+    if (rs) rs.onclick = async () => { mob = await api('/api/mobile/reset', {method: 'POST'}); renderMobile(); out('已重置，旧的二维码和已连接的手机都失效了', true); };
+  };
+  renderMobile();
+  $('#sMobile').onchange = async () => {
+    const on = $('#sMobile').checked;
+    $('#sMobile').closest('label').classList.toggle('on', on);
+    try { mob = await api('/api/mobile', {method: 'POST', body: JSON.stringify({enabled: on})}); renderMobile();
+      out(on ? '手机访问已打开' : '手机访问已关闭', true); }
+    catch (e) { out(e.message, false); }
+  };
   $('#sWeb').onchange = async () => {
     const on = $('#sWeb').checked;
     $('#sWeb').closest('label').classList.toggle('on', on);
@@ -823,13 +905,29 @@ $('#quit').onclick = async () => {
   document.body.innerHTML = '<div class="bye" style="flex:1"><h2>已退出</h2><p>可以关闭这个页面了。下次双击应用图标即可重新打开。</p></div>';
 };
 
-const startChat = location.hash.startsWith('#c=') ? decodeURIComponent(location.hash.slice(3)) : null;
-if (startChat) openChat(startChat, true); else newChat();
-loadStatus();
-loadSettings().then(c => {
+// Phone layout: the sidebar slides in over the conversation.
+const TOUCH = matchMedia('(hover: none)').matches;
+const closeSide = () => document.body.classList.remove('side-open');
+$('#menuBtn').onclick = () => document.body.classList.toggle('side-open');
+$('#backdrop').onclick = closeSide;
+$('#tbNew').onclick = () => { closeSide(); newChat(); };
+$('#chats').addEventListener('click', e => { if (e.target.closest('.chat-item') && !e.target.dataset.del) closeSide(); });
+$('#newChat').addEventListener('click', closeSide);
+$('#gear').addEventListener('click', closeSide);
+if (matchMedia('(max-width: 760px)').matches) $('#input').placeholder = '问点什么……';
+
+let REMOTE = false;  // opened from a phone through 手机访问
+(async () => {
+  try { REMOTE = (await api('/api/client')).remote; } catch {}
+  document.body.classList.toggle('remote', REMOTE);
+  const startChat = location.hash.startsWith('#c=') ? decodeURIComponent(location.hash.slice(3)) : null;
+  if (startChat) openChat(startChat, true); else newChat();
+  loadStatus();
+  loadSettings().then(c => {
   if (c.backend === 'api' && !c.api.has_key) openSettings('第一次使用：请选择一个大模型服务商并填写 API Key');
-  else if (location.hash === '#settings') { history.replaceState(null, '', location.pathname); openSettings(); }
-});
+  else if (location.hash === '#settings') { history.replaceState(null, '', location.pathname + location.search); openSettings(); }
+  });
+})();
 </script>
 </body>
 </html>

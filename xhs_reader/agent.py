@@ -174,7 +174,29 @@ def send(cid, text, images=()):
             _runs[cid] = codex_backend.start(chat, text, names, turn_id)
         else:
             _runs[cid] = _start_claude(chat, text, images, turn_id)
+    _keep_awake(True)
     return cid
+
+
+_awake = {"proc": None}
+
+
+def _keep_awake(on):
+    """Keep the Mac from idle-sleeping while a turn runs (e.g. asked from a phone), via
+    caffeinate; it also exits by itself if the app goes away (-w)."""
+    import sys
+    if sys.platform != "darwin":
+        return
+    p = _awake["proc"]
+    if on and (p is None or p.poll() is not None):
+        try:
+            _awake["proc"] = subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())],
+                                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            _awake["proc"] = None
+    elif not on and p is not None:
+        p.terminate()
+        _awake["proc"] = None
 
 
 def _model_label(chat):
@@ -422,6 +444,8 @@ def finish(cid, stopped=False, error=None):
                 msg["error"] = error
         msg["elapsed"] = round(time.time() - msg.get("started", time.time()))
     update(cid, fn)
+    if not any(is_running(c) for c in list(_runs) if c != cid):
+        _keep_awake(False)
 
 
 def _pump(cid, proc):

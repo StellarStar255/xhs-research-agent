@@ -467,6 +467,12 @@ def serve():
                             log_config=None if paths.FROZEN else uvicorn.config.LOGGING_CONFIG)
     server.server = uvicorn.Server(config)
     print(f"小红书调研助手：{url}", flush=True)
+    from . import remote
+    remote.main_port = port
+    try:
+        remote.start()  # phone access, if the user turned it on
+    except Exception as e:
+        logging.warning("phone access not started: %s", e)
 
     if no_browser:
         server.server.run()

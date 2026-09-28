@@ -34,6 +34,10 @@ Entry point: `python -m xhs_reader` (xhs_reader/app.py) picks a free port (8765 
 another app on the maintainer's Mac), reuses a running instance, opens the browser.
 Packaging: packaging/*.spec (PyInstaller, two exes: windowed GUI + console `xhs-cli`),
 packaging/macos_sign_notarize.sh, packaging/windows_installer.iss, .github/workflows/release.yml.
+Phone access (xhs_reader/remote.py, settings mobile{enabled,token,port}, off by default): a second
+uvicorn server on 0.0.0.0:8780–8799 for the same app. server.remote_guard treats every request not
+from the main loopback server as remote: it needs the key (?k= once, then cookie xhs_k) and can't
+POST settings/login/update/shutdown or touch /api/mobile. agent keeps macOS awake (caffeinate) during turns.
 Paths/child processes go through xhs_reader/paths.py and procutil.py (cross-platform; never
 os.kill(pid, 0) — it kills on Windows). Packaged data dir: ~/.xhs-research-agent.
 Apps launched from Finder/Explorer get a bare environment: paths.child_env() passes the OS
