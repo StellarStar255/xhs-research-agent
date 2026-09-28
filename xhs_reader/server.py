@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 import markdown
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -399,6 +399,13 @@ def note_image(sid: str, nid: str, name: str):
     if not f.is_file():
         raise HTTPException(404)
     return FileResponse(f)
+
+
+@app.get("/api/suggestions")
+def suggestions(ex: list[str] = Query(default=[])):
+    """Welcome-screen examples; ex = the ones on screen now (for 换一批)."""
+    from . import suggestions as sug
+    return sug.get(exclude=ex)
 
 
 @app.get("/api/settings")

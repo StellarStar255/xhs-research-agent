@@ -74,6 +74,9 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .examples button { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 12px;
                    padding: 12px 14px; font-size: 14px; text-align: left; line-height: 1.5; }
 .examples button:hover { border-color: var(--accent); }
+.ex-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; font-size: 12px; color: var(--muted); }
+.ex-foot button { border: 0; background: none; color: var(--muted); font-size: 13px; padding: 2px 4px; }
+.ex-foot button:hover { color: var(--accent); }
 .msg { margin: 18px 0; display: flex; gap: 12px; }
 .msg.user { justify-content: flex-end; }
 .msg.user .bubble { background: var(--user); color: var(--user-ink); border-radius: 18px 18px 4px 18px;
@@ -541,11 +544,30 @@ function newChat() {
   }
   $('#thread').innerHTML = `<div class="hello"><h1>想了解点什么？</h1>
     <p>我会去小红书搜索、读笔记和评论区，然后给你一个靠谱的答案</p>
-    <div class="examples">${EXAMPLES.map(x => `<button>${esc(x)}</button>`).join('')}</div></div>`;
-  document.querySelectorAll('.examples button').forEach(b => b.onclick = () => { $('#input').value = b.textContent; send(); });
+    <div class="examples" id="examples"></div>
+    <div class="ex-foot"><span id="exNote"></span><button id="exMore">↻ 换一批</button></div></div>`;
+  renderExamples(EXAMPLES, false);
+  loadExamples();
+  $('#exMore').onclick = () => loadExamples([...document.querySelectorAll('#examples button')].map(b => b.textContent));
   updateComposer(); loadChats(); $('#input').focus();
 }
 $('#newChat').onclick = newChat;
+
+// Example questions: personalised from recent chats when available (see suggestions.py).
+function renderExamples(items, personal) {
+  const box = document.getElementById('examples');
+  if (!box) return;
+  box.innerHTML = items.map(x => `<button>${esc(x)}</button>`).join('');
+  box.querySelectorAll('button').forEach(b => b.onclick = () => { $('#input').value = b.textContent; send(); });
+  $('#exNote').textContent = personal ? '根据你最近的提问推荐' : '';
+}
+async function loadExamples(exclude = []) {
+  try {
+    const q = exclude.map(x => 'ex=' + encodeURIComponent(x)).join('&');
+    const r = await api('/api/suggestions' + (q ? '?' + q : ''));
+    if (current === null) renderExamples(r.items, r.personal);
+  } catch {}
+}
 
 async function openChat(id, restoring = false) {
   const switching = id !== current;
