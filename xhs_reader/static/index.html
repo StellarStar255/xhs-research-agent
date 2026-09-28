@@ -453,6 +453,14 @@ function renderStep(p) {
   return `<div class="step">⚙︎ ${esc(p.command)}</div>`;
 }
 
+// Cached input is much cheaper than new input, so show them apart.
+function kTok(n) { return n >= 1000 ? Math.round(n / 1000) + 'k' : String(n); }
+function usageText(u) {
+  const cached = u.cached || 0;
+  if (!cached) return ` · ${kTok(u.prompt + u.completion)} tokens`;
+  return `<span title="缓存读取的价格约为正常输入的 1/10"> · 新输入 ${kTok(u.prompt - cached)} · 缓存 ${kTok(cached)} · 输出 ${kTok(u.completion)}</span>`;
+}
+
 function renderThread(chat, jump) {
   const lastMsg = chat.messages[chat.messages.length - 1];
   // A fresh "not logged in" from the scraper is authoritative; old chats shouldn't flip the status.
@@ -472,7 +480,7 @@ function renderThread(chat, jump) {
       ? '<div class="thinking"><span class="spin"></span>思考中…</div>' : '';
     const err = m.status === 'error' ? `<div class="error">出错了：${esc(m.error || '')}</div>`
       : m.status === 'stopped' ? '<div class="meta-line">已停止</div>' : '';
-    const tokens = m.usage && (m.usage.prompt + m.usage.completion) ? ` · ${Math.round((m.usage.prompt + m.usage.completion) / 1000)}k tokens` : '';
+    const tokens = m.usage && (m.usage.prompt + m.usage.completion) ? usageText(m.usage) : '';
     const meta = m.status === 'done' && m.elapsed ? `<div class="meta-line">用时 ${m.elapsed < 60 ? m.elapsed + ' 秒' : Math.round(m.elapsed / 60) + ' 分钟'}${m.model ? ' · ' + esc(m.model) : ''}${tokens}</div>` : '';
     return `<div class="msg"><img class="avatar" src="/icon.png" alt=""><div class="body">${parts}${draft}${busy}${err}${meta}</div></div>`;
   }).join('');
@@ -632,7 +640,7 @@ async function loadSettings() {
   return conf;
 }
 function formValue() {
-  return {backend: document.querySelector('input[name=backend]:checked').value,
+  return {backend: document.querySelector('input[name=backend]:checked').value, claude_model: $('#sClaudeModel')?.value || '',
           api: {provider: $('#sProvider').value, base_url: $('#sBase').value, model: $('#sModel').value, api_key: $('#sKey').value}};
 }
 function showProviderNote() {
@@ -666,6 +674,10 @@ async function openSettings(message) {
     <h3>回答问题用的大模型</h3>
     <label class="opt ${conf.claude_available ? '' : 'disabled'}"><input type="radio" name="backend" value="claude" ${conf.backend === 'claude' ? 'checked' : ''} ${conf.claude_available ? '' : 'disabled'}>
       <div>Claude Code<small>${conf.claude_available ? '使用本机已登录的 Claude Code（需要 Claude 订阅）' : '这台电脑没有安装 Claude Code'}</small></div></label>
+    <div class="api" id="sClaude"><label class="field"><span>Claude 模型</span><select id="sClaudeModel">
+      ${[['', '默认（跟随 Claude Code 的设置）'], ['sonnet', 'Sonnet：更省额度、更快，日常调研推荐'], ['opus', 'Opus：最强，额度消耗较多']].map(([v, l]) =>
+        `<option value="${v}" ${conf.claude_model === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <div class="note">从下一个问题开始生效。读笔记、总结这类工作用 Sonnet 基本够用。</div></div>
     ${conf.codex_available || conf.backend === 'codex' ? `<label class="opt ${conf.codex_available ? '' : 'disabled'}"><input type="radio" name="backend" value="codex" ${conf.backend === 'codex' ? 'checked' : ''} ${conf.codex_available ? '' : 'disabled'}>
       <div>Codex（ChatGPT 账号）<small>${conf.codex_available ? '使用本机已登录的 OpenAI Codex（例如用 ChatGPT 账号登录）' : '这台电脑没有安装 Codex'}</small></div></label>` : ''}
     <label class="opt"><input type="radio" name="backend" value="api" ${conf.backend === 'api' ? 'checked' : ''}>
@@ -688,7 +700,7 @@ async function openSettings(message) {
   </div>`;
   const sync = () => {
     const b = document.querySelector('input[name=backend]:checked')?.value;
-    $('#sApi').hidden = b !== 'api'; $('#sTest').hidden = b !== 'api';
+    $('#sApi').hidden = b !== 'api'; $('#sTest').hidden = b !== 'api'; $('#sClaude').hidden = b !== 'claude';
     document.querySelectorAll('.settings label.opt').forEach(l => { const i = l.querySelector('input[name=backend]'); if (i) l.classList.toggle('on', i.checked); });
   };
   document.querySelectorAll('input[name=backend]').forEach(r => r.onchange = sync);
@@ -730,7 +742,7 @@ async function openSettings(message) {
   $('#sSave').onclick = busy($('#sSave'), async () => {
     await api('/api/settings', {method: 'POST', body: JSON.stringify(formValue())});
     await loadSettings();
-    out('已保存，新对话会使用这个设置', true);
+    out('已保存。切换大模型对新对话生效，Claude 模型从下一个问题起生效', true);
     setTimeout(() => $('#modal').classList.remove('show'), 700);
   });
   showProviderNote(); sync();

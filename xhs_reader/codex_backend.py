@@ -146,7 +146,8 @@ def _handle(chat, msg, ev):
                     step["status"], step["error"] = "error", str((item.get("error") or {}).get("message", ""))
     elif t == "turn.completed":
         u = ev.get("usage") or {}
-        msg["usage"] = {"prompt": u.get("input_tokens", 0), "completion": u.get("output_tokens", 0)}
+        msg["usage"] = {"prompt": u.get("input_tokens", 0), "cached": u.get("cached_input_tokens", 0),
+                        "completion": u.get("output_tokens", 0)}
         msg["status"] = "done"
     elif t in ("turn.failed", "error"):
         err = ev.get("error") or {}

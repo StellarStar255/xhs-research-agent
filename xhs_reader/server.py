@@ -37,6 +37,7 @@ class ApiConf(BaseModel):
 class SettingsReq(BaseModel):
     backend: str
     api: ApiConf
+    claude_model: str = ""
 
 
 def _merged(req: SettingsReq):
@@ -44,6 +45,9 @@ def _merged(req: SettingsReq):
     if req.backend not in ("claude", "codex", "api"):
         raise HTTPException(400, "未知的后端")
     s["backend"] = req.backend
+    if req.claude_model not in settings.CLAUDE_MODELS:
+        raise HTTPException(400, "未知的 Claude 模型")
+    s["claude_model"] = req.claude_model
     key = req.api.api_key.strip() or s["api"].get("api_key", "")
     s["api"] = {"provider": req.api.provider, "base_url": req.api.base_url.strip().rstrip("/"),
                 "model": req.api.model.strip(), "api_key": key}

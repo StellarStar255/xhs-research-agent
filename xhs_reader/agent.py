@@ -181,7 +181,8 @@ def _model_label(chat):
     if chat.get("backend") == "codex":
         return "Codex"
     if chat.get("backend", "claude") == "claude":
-        return f"Claude Code{' · ' + MODEL if MODEL else ''}"
+        model = MODEL or settings.load()["claude_model"]
+        return f"Claude Code{' · ' + model.capitalize() if model else ''}"
     api = settings.load()["api"]
     name = next((p["name"] for p in settings.PROVIDERS if p["id"] == api.get("provider")), "")
     return f"{name.split('（')[0]} · {api.get('model')}" if name and api.get("provider") != "custom" else api.get("model", "")
@@ -257,8 +258,9 @@ def _start_claude(chat, text, images, turn_id=""):
            "--include-partial-messages", "--system-prompt", system_prompt(TOOLS_TEXT, web),
            "--tools", "WebSearch" if web else "", "--mcp-config", mcp_config, "--strict-mcp-config",
            "--allowedTools", "mcp__xhs", *(["WebSearch"] if web else [])]
-    if MODEL:
-        cmd += ["--model", MODEL]
+    model = MODEL or settings.load()["claude_model"]
+    if model:
+        cmd += ["--model", model]
     if chat.get("claude_session"):
         cmd += ["--resume", chat["claude_session"]]
     env = paths.child_env({"MCP_TIMEOUT": "60000", "MCP_TOOL_TIMEOUT": "900000"})  # searches take minutes
@@ -398,8 +400,10 @@ def _handle(chat, msg, ev):
         else:
             msg["status"] = "done"
             u = ev.get("usage") or {}
+            # prompt = all input tokens; cached = the part read from the prompt cache (much cheaper)
             msg["usage"] = {"prompt": sum(u.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens",
                                                                    "cache_read_input_tokens")),
+                            "cached": u.get("cache_read_input_tokens") or 0,
                             "completion": u.get("output_tokens") or 0}
             if not any(p["type"] == "text" for p in msg["parts"]) and ev.get("result"):
                 msg["parts"].append({"type": "text", "text": ev["result"]})

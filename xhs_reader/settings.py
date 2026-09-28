@@ -37,6 +37,9 @@ PROVIDERS = [
 ]
 
 
+CLAUDE_MODELS = ("", "sonnet", "opus")
+
+
 # Where agent CLIs usually live, for when the app was started without them on PATH
 # (double-clicked apps get a minimal PATH). {name} is claude or codex.
 _CLI_CANDIDATES = [
@@ -121,6 +124,10 @@ def load():
     # Let Claude Code / Codex use their built-in web search for plain facts (official prices,
     # specs, opening hours). Off by default: answers should rest on Xiaohongshu.
     s.setdefault("web_search", False)
+    # Claude Code model: "" = Claude Code's own default, or an alias like "sonnet" / "opus".
+    s.setdefault("claude_model", "")
+    if s["claude_model"] not in CLAUDE_MODELS:
+        s["claude_model"] = ""
     if s["browser_window"] == "offscreen":  # v0.1.11 name
         s["browser_window"] = "visible"
     api = s.setdefault("api", {})
@@ -146,7 +153,8 @@ def public(s=None):
     key = api.pop("api_key", "")
     api["has_key"] = bool(key)
     api["key_hint"] = f"{key[:3]}…{key[-4:]}" if len(key) > 10 else ("已填写" if key else "")
-    return {"backend": s["backend"], "ui": s["ui"], "browser_window": s["browser_window"], "web_search": s["web_search"], "api": api, "claude_available": claude_available(),
+    return {"backend": s["backend"], "ui": s["ui"], "browser_window": s["browser_window"], "web_search": s["web_search"],
+            "claude_model": s["claude_model"], "api": api, "claude_available": claude_available(),
             "codex_available": codex_available(), "providers": PROVIDERS}
 
 

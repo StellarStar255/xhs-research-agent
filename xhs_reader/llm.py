@@ -122,7 +122,7 @@ def run_turn(run):
     history.append({"role": "user", "content": _user_content(cid, user["text"], user.get("images"))})
     cl, model = client()
     prompt = agent.system_prompt(TOOLS_TEXT)
-    usage = {"prompt": 0, "completion": 0}
+    usage = {"prompt": 0, "cached": 0, "completion": 0}
 
     def save_history(chat, msg):
         chat["llm_history"] = history
@@ -142,6 +142,8 @@ def run_turn(run):
             if chunk.usage:
                 usage["prompt"] += chunk.usage.prompt_tokens or 0
                 usage["completion"] += chunk.usage.completion_tokens or 0
+                details = getattr(chunk.usage, "prompt_tokens_details", None)
+                usage["cached"] += getattr(details, "cached_tokens", 0) or 0
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta

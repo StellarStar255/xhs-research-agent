@@ -7,7 +7,8 @@ Main product: a local chat GUI (`./start.sh` → http://localhost:8766). Two ans
 chosen in the GUI settings (data/settings.json) and fixed per chat:
 - "claude": `claude -p` headless (xhs_reader/agent.py) with NO built-in tools (`--tools ""`; Read
   can't be confined to a folder) and only our MCP server (`--mcp-config`, `mcp__xhs`).
-  XHS_AGENT_MODEL=sonnet for faster turns.
+  Model: Settings → Claude 模型 (settings claude_model: ""/sonnet/opus); XHS_AGENT_MODEL overrides.
+  Usage shown per answer splits new input / cached input / output (usage.cached).
 - "codex": `codex exec --json` (xhs_reader/codex_backend.py). Codex can't be limited to
   specific commands, so it gets no shell (--disable shell_tool etc., --ignore-user-config,
   read-only sandbox) and reaches the scraper only via our MCP server `xhs-cli mcp`
