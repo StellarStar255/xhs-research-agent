@@ -211,6 +211,10 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .desc { white-space: pre-wrap; }
 .cmt { border-top: 1px solid var(--line); padding: 7px 0; font-size: 13px; }
 .cmt .u { color: var(--muted); } .cmt .r { margin-left: 16px; color: var(--muted); font-size: 12px; }
+.acts { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.acts button { border: 1px solid var(--line); background: none; color: var(--muted); border-radius: 7px; font-size: 12px; padding: 2px 10px; }
+.acts button:hover { color: var(--accent); border-color: var(--accent); }
+.export .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
 .mobile-qr { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
 .mobile-qr svg { width: 180px; height: 180px; border-radius: 8px; flex-shrink: 0; }
 .mobile-qr .u { font-size: 12px; color: var(--muted); word-break: break-all; }
@@ -514,7 +518,8 @@ function renderThread(chat, jump) {
   if (fresh && lastMsg.parts?.some(p => p.status === 'login') && loggedIn !== false && !loginPoll) setLogin(false);
   const sc = $('#scroll');
   const nearBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 120;
-  $('#thread').innerHTML = chat.messages.map(m => {
+  lastChat = chat;
+  $('#thread').innerHTML = chat.messages.map((m, i) => {
     if (m.role === 'user') {
       const imgs = (m.images || []).map(n => `<img src="/api/chats/${esc(chat.id)}/images/${esc(n)}" data-zoom>`).join('');
       return `<div class="msg user"><div class="col">${imgs ? `<div class="uimgs">${imgs}</div>` : ''}
@@ -528,15 +533,88 @@ function renderThread(chat, jump) {
       : m.status === 'stopped' ? '<div class="meta-line">已停止</div>' : '';
     const tokens = m.usage && (m.usage.prompt + m.usage.completion) ? usageText(m.usage) : '';
     const meta = m.status === 'done' && m.elapsed ? `<div class="meta-line">用时 ${m.elapsed < 60 ? m.elapsed + ' 秒' : Math.round(m.elapsed / 60) + ' 分钟'}${m.model ? ' · ' + esc(m.model) : ''}${tokens}</div>` : '';
-    return `<div class="msg"><img class="avatar" src="/icon.png" alt=""><div class="body">${parts}${draft}${busy}${err}${meta}</div></div>`;
+    const acts = m.status === 'done' && (m.parts || []).some(p => p.type === 'text')
+      ? `<div class="acts"><button data-copy="${i}">复制</button><button data-export="${i}">导出 / 分享</button></div>` : '';
+    return `<div class="msg"><img class="avatar" src="/icon.png" alt=""><div class="body">${parts}${draft}${busy}${err}${meta}${acts}</div></div>`;
   }).join('');
   document.querySelectorAll('.md a').forEach(a => { a.target = '_blank'; a.rel = 'noopener'; });
   document.querySelectorAll('[data-session]').forEach(b => b.onclick = () => openNotes(b.dataset.session));
+  document.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
+    const m = lastChat.messages[+b.dataset.copy];
+    const ok = await copyText(toPlain(m.parts.filter(p => p.type === 'text').map(p => p.text).join('\n\n')));
+    b.textContent = ok ? '已复制 ✓' : '复制失败'; setTimeout(() => { b.textContent = '复制'; }, 1500);
+  });
+  document.querySelectorAll('[data-export]').forEach(b => b.onclick = () => showExport(+b.dataset.export));
   document.querySelectorAll('[data-zoom]').forEach(img => img.onclick = () => {
     $('#sheet').innerHTML = `<div class="zoom"><img src="${img.src}"></div>`; $('#modal').classList.add('show');
   });
   document.querySelectorAll('.uimgs img').forEach(img => img.onload = () => { if (jump || nearBottom) sc.scrollTop = sc.scrollHeight; });
   if (jump || nearBottom) sc.scrollTop = sc.scrollHeight;
+}
+
+/* ---------- copy & export ---------- */
+let lastChat = null;
+// Markdown → text that reads well when pasted into WeChat and the like.
+function toPlain(md) {
+  return md
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '$1（$2）')
+    .replace(/^#{1,6}\s*(.+)$/gm, '【$1】')
+    .replace(/\*\*(.+?)\*\*/g, '$1').replace(/__(.+?)__/g, '$1')
+    .replace(/^\s*\|?\s*:?-{3,}.*$/gm, '')
+    .replace(/^\|(.*)\|\s*$/gm, (_, row) => row.split('|').map(c => c.trim()).join(' ｜ '))
+    .replace(/^(\s*)[-*+]\s+/gm, '$1• ')
+    .replace(/\n{3,}/g, '\n\n').trim();
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch {  // plain-http pages (phone access) have no clipboard API
+    const t = document.createElement('textarea');
+    t.value = text; t.style.position = 'fixed'; t.style.opacity = '0';
+    document.body.appendChild(t); t.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch {}
+    t.remove(); return ok;
+  }
+}
+function showExport(index) {
+  const opt = (name, value, label, small, on) => `<label class="opt ${on ? 'on' : ''}"><input type="radio" name="${name}" value="${value}" ${on ? 'checked' : ''}>
+    <div>${label}<small>${small}</small></div></label>`;
+  $('#sheet').innerHTML = `<div class="settings export">
+    <button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button>
+    <h2>导出 / 分享</h2>
+    <h3>内容</h3><div class="seg">${opt('xscope', 'one', '这一问一答', '只导出这个问题和回答', true)}${opt('xscope', 'all', '整个对话', '这个对话里的所有问答', false)}</div>
+    <h3>格式</h3><div class="seg">${opt('xfmt', 'png', '长图', '适合发微信、朋友圈', true)}${opt('xfmt', 'html', '网页文件', '保留表格和可点击的链接，用浏览器打开', false)}</div>
+    <label class="opt"><input type="checkbox" id="xHide"><div>隐藏评论者昵称<small>把回答里引用的评论者昵称换成「某用户」。公开发布时建议勾选（笔记作者和笔记链接会保留）</small></div></label>
+    <p class="note" style="font-size:12px">内容整理自小红书用户的笔记和评论。发给朋友没问题；公开发布时请注意不要大段转载别人的原文。</p>
+    <div class="actions"><span class="msg-out" id="xOut"></span><button class="btn primary" id="xGo">导出</button></div></div>`;
+  document.querySelectorAll('.export input[type=radio]').forEach(r => r.onchange = () =>
+    document.querySelectorAll(`.export input[name=${r.name}]`).forEach(x => x.closest('label').classList.toggle('on', x.checked)));
+  $('#xHide').onchange = () => $('#xHide').closest('label').classList.toggle('on', $('#xHide').checked);
+  const out = (text, ok) => { $('#xOut').className = 'msg-out ' + (ok ? 'ok-text' : 'err-text'); $('#xOut').innerHTML = text; };
+  $('#xGo').onclick = async () => {
+    const fmt = document.querySelector('input[name=xfmt]:checked').value;
+    const body = {format: fmt, index: document.querySelector('input[name=xscope]:checked').value === 'one' ? index : null,
+                  hide_names: $('#xHide').checked, save: !!window.pywebview};
+    $('#xGo').disabled = true; out(fmt === 'png' ? '正在生成图片…' : '正在生成…', true);
+    try {
+      const r = await fetch(`/api/chats/${encodeURIComponent(current)}/export`, {method: 'POST',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+      if (body.save) {  // the app's own window can't download: the server saved it to 下载
+        const j = await r.json();
+        out(`已保存到「下载」：${esc(j.name)} <a href="#" id="xReveal">在文件夹中显示</a>`, true);
+        $('#xReveal').onclick = e => { e.preventDefault(); api('/api/export/reveal', {method: 'POST'}).catch(() => {}); };
+      } else {
+        const name = decodeURIComponent((r.headers.get('Content-Disposition') || '').split("''")[1] || 'export.' + fmt);
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(await r.blob()); a.download = name;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+        out(TOUCH ? '已生成。长图打开后长按可以保存到相册或发给朋友' : '已下载：' + esc(name), true);
+      }
+    } catch (e) { out(esc(e.message), false); }
+    $('#xGo').disabled = false;
+  };
+  $('#modal').classList.add('show');
 }
 
 function updateComposer() {

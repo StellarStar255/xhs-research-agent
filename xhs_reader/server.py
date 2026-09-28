@@ -15,7 +15,7 @@ app = FastAPI()
 
 # What a phone (remote client, see remote.py) may not do: these stay on the computer.
 REMOTE_DENY_POST = ("/api/shutdown", "/api/settings", "/api/update/start", "/api/ui", "/api/browser-window",
-                    "/api/web-search", "/api/login")
+                    "/api/web-search", "/api/login", "/api/export/reveal")
 LOCKED_PAGE = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>小红书调研助手</title><body style="font:16px/1.7 -apple-system,sans-serif;padding:40px 24px;text-align:center">
 <h2>需要扫码连接</h2><p>请在电脑上打开「设置 → 手机访问」，用手机扫描那里的二维码。</p></body>"""
@@ -233,6 +233,65 @@ def image(cid: str, name: str):
     if "/" in name or ".." in name or not f.is_file():
         raise HTTPException(404)
     return FileResponse(f)
+
+
+class ExportReq(BaseModel):
+    format: str = "png"            # "png" (long image) or "html" (standalone web page)
+    index: int | None = None       # an assistant message: export just that Q&A; None = whole chat
+    hide_names: bool = False       # replace commenters' nicknames with 某用户
+    save: bool = False             # save into ~/Downloads (the native window can't download files)
+
+
+_last_export = {"path": None}
+
+
+@app.post("/api/chats/{cid}/export")
+def export_chat(cid: str, req: ExportReq, request: Request):
+    from urllib.parse import quote
+    from fastapi.responses import Response
+    from . import export
+    if req.format not in ("png", "html"):
+        raise HTTPException(400, "未知的导出格式")
+    try:
+        title, page = export.build_html(cid, req.index, req.hide_names)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(404, str(e) if isinstance(e, ValueError) else "找不到这个对话")
+    name = re.sub(r'[\\/:*?"<>|\s]+', "_", title).strip("_")[:40] or "小红书调研"
+    if req.format == "html":
+        body, mime, ext = page.encode("utf-8"), "text/html; charset=utf-8", "html"
+    else:
+        try:
+            body, mime, ext = export.render_png(page), "image/png", "png"
+        except Exception as e:
+            raise HTTPException(500, f"生成图片失败：{e}")
+    if req.save and not remote.is_remote(request.scope):
+        folder = Path.home() / "Downloads"
+        folder.mkdir(exist_ok=True)
+        f, n = folder / f"{name}.{ext}", 1
+        while f.exists():
+            n += 1
+            f = folder / f"{name} ({n}).{ext}"
+        f.write_bytes(body)
+        _last_export["path"] = f
+        return {"saved": str(f), "name": f.name}
+    return Response(body, media_type=mime,
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}.{ext}"})
+
+
+@app.post("/api/export/reveal")
+def reveal_export():
+    """Show the last saved export in Finder / Explorer."""
+    import sys
+    f = _last_export["path"]
+    if not f or not f.exists():
+        raise HTTPException(404, "文件不存在")
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", str(f)])
+    elif sys.platform == "win32":
+        subprocess.Popen(["explorer", "/select,", str(f)])
+    else:
+        subprocess.Popen(["xdg-open", str(f.parent)])
+    return {"ok": True}
 
 
 @app.post("/api/chats/{cid}/stop")

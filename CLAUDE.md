@@ -38,6 +38,10 @@ Phone access (xhs_reader/remote.py, settings mobile{enabled,token,port}, off by 
 uvicorn server on 0.0.0.0:8780–8799 for the same app. server.remote_guard treats every request not
 from the main loopback server as remote: it needs the key (?k= once, then cookie xhs_k) and can't
 POST settings/login/update/shutdown or touch /api/mobile. agent keeps macOS awake (caffeinate) during turns.
+Sharing (xhs_reader/export.py): per-answer 复制 (plain text) and 导出 (one Q&A or whole chat → standalone
+HTML, or a long PNG rendered by a fresh headless Chrome without the profile). hide_names replaces
+commenters' nicknames only where used as names (quoted/@/…说), never inside URLs, never note authors.
+The native window can't download, so it saves to ~/Downloads (save=true) and /api/export/reveal shows it.
 Paths/child processes go through xhs_reader/paths.py and procutil.py (cross-platform; never
 os.kill(pid, 0) — it kills on Windows). Packaged data dir: ~/.xhs-research-agent.
 Apps launched from Finder/Explorer get a bare environment: paths.child_env() passes the OS
