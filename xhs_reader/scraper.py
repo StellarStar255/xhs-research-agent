@@ -79,10 +79,17 @@ def limits():
             out["cooldown_reason"] = cd.get("reason")
     except (FileNotFoundError, ValueError, KeyError):
         pass
-    if out["hour_left"] == 0 and stamps:
-        out["hour_resets"] = min(t for t in stamps if t > now - 3600) + 3600
+    # Each view frees its slot one hour / one day after it happened: *_next is when the
+    # next slot comes back, *_full when every slot is back.
+    in_hour = [t for t in stamps if t > now - 3600]
+    if in_hour:
+        out["hour_next"], out["hour_full"] = min(in_hour) + 3600, max(in_hour) + 3600
+    if stamps:
+        out["day_next"], out["day_full"] = min(stamps) + 86400, max(stamps) + 86400
+    if out["hour_left"] == 0 and in_hour:
+        out["hour_resets"] = out["hour_next"]
     if out["day_left"] == 0 and stamps:
-        out["day_resets"] = min(stamps) + 86400  # when the oldest counted view drops out
+        out["day_resets"] = out["day_next"]  # when the oldest counted view drops out
     return out
 
 
