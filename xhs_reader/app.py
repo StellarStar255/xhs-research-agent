@@ -99,7 +99,7 @@ def _wait_ready(port, timeout=20):
 
 LOADING = """<html><body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
 font:15px -apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#7a7a80;background:#f7f6f4">
-正在启动小红书调研助手…</body></html>"""
+正在启动种草调研助手…</body></html>"""
 
 
 MAC, WINDOWS = sys.platform == "darwin", sys.platform == "win32"
@@ -155,14 +155,14 @@ class MacShell:
             img.setTemplate_(True)  # macOS tints it for light/dark menu bars
             item.button().setImage_(img)
         item.button().setImagePosition_(AK.NSImageLeft)
-        item.button().setToolTip_("小红书调研助手")
+        item.button().setToolTip_("种草调研助手")
         menu = AK.NSMenu.alloc().init()
         menu.setAutoenablesItems_(False)
         self.status_line = menu.addItemWithTitle_action_keyEquivalent_("空闲", None, "")
         self.status_line.setEnabled_(False)
         menu.addItem_(AK.NSMenuItem.separatorItem())
         for title, key in [("打开页面", "open"), ("切换为独立窗口", "window"), ("设置 / 检查更新…", "settings"),
-                           (None, None), ("退出小红书调研助手", "quit")]:
+                           (None, None), ("退出种草调研助手", "quit")]:
             if title is None:
                 menu.addItem_(AK.NSMenuItem.separatorItem())
                 continue
@@ -248,9 +248,9 @@ class WinTray:
             M("显示窗口", lambda: actions["window"]()),
             M("设置 / 检查更新…", lambda: actions["settings"]()),
             pystray.Menu.SEPARATOR,
-            M("退出小红书调研助手", lambda: actions["quit"]()),
+            M("退出种草调研助手", lambda: actions["quit"]()),
         )
-        self.icon = pystray.Icon("xhs-research-agent", Image.open(ICON), "小红书调研助手", menu)
+        self.icon = pystray.Icon("xhs-research-agent", Image.open(ICON), "种草调研助手", menu)
         self.icon.run_detached()
         threading.Thread(target=self._status_loop, daemon=True).start()
 
@@ -267,7 +267,7 @@ class WinTray:
                 n = 0
             if n != last:
                 last = n
-                self.icon.title = f"小红书调研助手 · 正在调研（{n} 个）" if n else "小红书调研助手"
+                self.icon.title = f"种草调研助手 · 正在调研（{n} 个）" if n else "种草调研助手"
                 self.icon.update_menu()
             time.sleep(2)
 
@@ -275,7 +275,7 @@ class WinTray:
         if not self.notified:
             self.notified = True
             try:
-                self.icon.notify("已最小化到托盘。点图标可以重新打开，右键可以退出。", "小红书调研助手")
+                self.icon.notify("已最小化到托盘。点图标可以重新打开，右键可以退出。", "种草调研助手")
             except Exception:
                 pass
 
@@ -361,7 +361,7 @@ def _run_window(url, port):
         except Exception:
             logging.exception("macOS Dock/menu-bar integration unavailable")
 
-    menu = [Menu("小红书调研助手", [
+    menu = [Menu("种草调研助手", [
         MenuAction("新对话", js("newChat()")),
         MenuAction("设置…", js("openSettings()")),
         MenuAction("扫码登录小红书…", js("startLogin()")),
@@ -402,7 +402,7 @@ def _run_window(url, port):
 
     browser_mode = state["mode"] == "browser"
     window = webview.create_window(
-        "小红书调研助手", html=LOADING, width=1240, height=840, min_size=(860, 600),
+        "种草调研助手", html=LOADING, width=1240, height=840, min_size=(860, 600),
         hidden=browser_mode and bool(MAC or tray), minimized=browser_mode and not (MAC or tray),
         text_select=True,  # pywebview disables selection by default; answers must be copyable
         menu=menu, background_color="#f7f6f4",
@@ -466,7 +466,7 @@ def serve():
     config = uvicorn.Config(server.app, host="127.0.0.1", port=port, log_level="warning",
                             log_config=None if paths.FROZEN else uvicorn.config.LOGGING_CONFIG)
     server.server = uvicorn.Server(config)
-    print(f"小红书调研助手：{url}", flush=True)
+    print(f"种草调研助手：{url}", flush=True)
     from . import remote
     remote.main_port = port
     try:

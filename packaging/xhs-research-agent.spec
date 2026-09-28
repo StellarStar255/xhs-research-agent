@@ -57,8 +57,8 @@ if MAC:
         coll, name=f"{APP_NAME}.app", icon=icon, version=VERSION,
         bundle_identifier="io.github.stellarstar255.xhs-research-agent",
         info_plist={
-            "CFBundleDisplayName": "小红书调研助手",
-            "CFBundleName": "小红书调研助手",
+            "CFBundleDisplayName": "种草调研助手",
+            "CFBundleName": "种草调研助手",
             "CFBundleShortVersionString": VERSION,
             "CFBundleVersion": VERSION,
             "NSHighResolutionCapable": True,

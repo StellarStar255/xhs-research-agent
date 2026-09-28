@@ -3,7 +3,7 @@
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
-#define AppName "小红书调研助手"
+#define AppName "种草调研助手"
 #define AppExe "XHS Research Agent.exe"
 
 [Setup]
@@ -15,6 +15,7 @@ AppPublisher=xhs-research-agent (open source, not affiliated with Xiaohongshu)
 AppPublisherURL=https://github.com/StellarStar255/xhs-research-agent
 DefaultDirName={localappdata}\Programs\XHS Research Agent
 DefaultGroupName={#AppName}
+UsePreviousGroup=no
 PrivilegesRequired=lowest
 DisableProgramGroupPage=yes
 LicenseFile=..\LICENSE
@@ -33,6 +34,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "..\dist\XHS Research Agent\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+; Up to v0.1.25 the app was called 小红书调研助手: remove its old shortcuts on upgrade.
+[InstallDelete]
+Type: filesandordirs; Name: "{userprograms}\小红书调研助手"
+Type: files; Name: "{autodesktop}\小红书调研助手.lnk"
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"

@@ -1,6 +1,6 @@
-# 小红书调研助手 (xhs_reader)
+# 种草调研助手 (xhs_reader)
 
-> If your system prompt says you are 「小红书调研助手」 (the GUI chat agent), ignore this file
+> If your system prompt says you are 「种草调研助手」 (the GUI chat agent), ignore this file
 > and follow your system prompt.
 
 Main product: a local chat GUI (`./start.sh` → http://localhost:8766). Two answer backends,

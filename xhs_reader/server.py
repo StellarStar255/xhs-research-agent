@@ -17,7 +17,7 @@ app = FastAPI()
 REMOTE_DENY_POST = ("/api/shutdown", "/api/settings", "/api/update/start", "/api/ui", "/api/browser-window",
                     "/api/web-search", "/api/login", "/api/export/reveal")
 LOCKED_PAGE = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>小红书调研助手</title><body style="font:16px/1.7 -apple-system,sans-serif;padding:40px 24px;text-align:center">
+<title>种草调研助手</title><body style="font:16px/1.7 -apple-system,sans-serif;padding:40px 24px;text-align:center">
 <h2>需要扫码连接</h2><p>请在电脑上打开「设置 → 手机访问」，用手机扫描那里的二维码。</p></body>"""
 
 
@@ -45,7 +45,7 @@ def client(request: Request):
 @app.get("/manifest.webmanifest")
 def manifest():
     # No start_url: a home-screen shortcut opens the address it was added from (with its key).
-    return JSONResponse({"name": "小红书调研助手", "short_name": "调研助手", "display": "standalone",
+    return JSONResponse({"name": "种草调研助手", "short_name": "调研助手", "display": "standalone",
                          "background_color": "#161617", "theme_color": "#ff2442",
                          "icons": [{"src": "/icon.png", "sizes": "256x256", "type": "image/png"}]},
                         media_type="application/manifest+json")
@@ -257,7 +257,7 @@ def export_chat(cid: str, req: ExportReq, request: Request):
         title, page = export.build_html(cid, req.index, req.hide_names)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, str(e) if isinstance(e, ValueError) else "找不到这个对话")
-    name = re.sub(r'[\\/:*?"<>|\s]+', "_", title).strip("_")[:40] or "小红书调研"
+    name = re.sub(r'[\\/:*?"<>|\s]+', "_", title).strip("_")[:40] or "种草调研"
     if req.format == "html":
         body, mime, ext = page.encode("utf-8"), "text/html; charset=utf-8", "html"
     else:

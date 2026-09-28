@@ -40,7 +40,7 @@ STAGE="$(mktemp -d)"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 rm -f "$DMG"
-hdiutil create -volname "小红书调研助手" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+hdiutil create -volname "种草调研助手" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 rm -rf "$STAGE"
 
 if [ -n "${NOTARY_PROFILE:-}" ]; then

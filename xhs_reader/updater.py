@@ -181,7 +181,7 @@ def _mac_install(dmg, work):
     q = shlex.quote
     script = work / "install.sh"
     script.write_text(f"""#!/bin/bash
-# Installed by 小红书调研助手's updater: wait for the app to quit, swap in the new version, relaunch.
+# Installed by 种草调研助手's updater: wait for the app to quit, swap in the new version, relaunch.
 exec >>{q(str(paths.DATA_DIR / "update.log"))} 2>&1
 set -u
 APP={q(str(bundle))}; DMG={q(str(dmg))}; PID={os.getpid()}

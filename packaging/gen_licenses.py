@@ -42,7 +42,7 @@ def main():
         check=True, capture_output=True, text=True).stdout
     py_license = Path(sysconfig.get_path("stdlib")) / "LICENSE.txt"
     out = [
-        "小红书调研助手 (xhs-research-agent) — third-party software notices",
+        "种草调研助手 (xhs-research-agent) — third-party software notices",
         "=" * 70,
         "",
         "This application bundles the following open-source software. Each is used",

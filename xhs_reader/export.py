@@ -150,7 +150,7 @@ def build_html(cid, index=None, hide_names=False):
         raise ValueError("这个对话还没有可以导出的回答")
     names = commenter_names(pairs) if hide_names else []
     title = pairs[0][0].get("text", "").strip().splitlines()[0][:60] if index is not None and pairs[0][0].get("text") \
-        else chat.get("title", "小红书调研")
+        else chat.get("title", "种草调研")
     blocks, answers = [], []
     for q, a in pairs:
         imgs = ""
