@@ -237,7 +237,7 @@ def image(cid: str, name: str):
 
 
 class ExportReq(BaseModel):
-    format: str = "png"            # "png" (long image) or "html" (standalone web page)
+    format: str = "png"            # "png" (long image), "pdf" or "html" (standalone web page)
     index: int | None = None       # an assistant message: export just that Q&A; None = whole chat
     hide_names: bool = False       # replace commenters' nicknames with 某用户
     save: bool = False             # save into ~/Downloads (the native window can't download files)
@@ -251,7 +251,7 @@ def export_chat(cid: str, req: ExportReq, request: Request):
     from urllib.parse import quote
     from fastapi.responses import Response
     from . import export
-    if req.format not in ("png", "html"):
+    if req.format not in ("png", "pdf", "html"):
         raise HTTPException(400, "未知的导出格式")
     try:
         title, page = export.build_html(cid, req.index, req.hide_names)
@@ -262,9 +262,12 @@ def export_chat(cid: str, req: ExportReq, request: Request):
         body, mime, ext = page.encode("utf-8"), "text/html; charset=utf-8", "html"
     else:
         try:
-            body, mime, ext = export.render_png(page), "image/png", "png"
+            if req.format == "pdf":
+                body, mime, ext = export.render_pdf(page), "application/pdf", "pdf"
+            else:
+                body, mime, ext = export.render_png(page), "image/png", "png"
         except Exception as e:
-            raise HTTPException(500, f"生成图片失败：{e}")
+            raise HTTPException(500, f"生成{'PDF' if req.format == 'pdf' else '图片'}失败：{e}")
     if req.save and not remote.is_remote(request.scope):
         folder = Path.home() / "Downloads"
         folder.mkdir(exist_ok=True)

@@ -30,6 +30,13 @@ h1 { font-size: 21px; margin: 4px 0 2px; line-height: 1.4; }
 .md ul, .md ol { padding-left: 22px; }
 .md hr { border: 0; border-top: 1px solid #e5e3df; margin: 16px 0; }
 footer { color: #7a7a80; font-size: 12px; text-align: center; margin-top: 26px; line-height: 1.6; }
+@media print {
+  body { background: #fff; }
+  .page { max-width: none; padding: 0; }
+  .a { border-color: #ddd; }
+  .q, .md tr, .md li, .md blockquote, .md img { break-inside: avoid; }
+  .md h1, .md h2, .md h3 { break-after: avoid; }
+}
 """
 
 MIME = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp", "gif": "image/gif"}
@@ -150,19 +157,35 @@ def build_html(cid, index=None, hide_names=False):
     return title, re.sub(r'<a href="(https?://[^"]+)"', r'<a href="\1" target="_blank" rel="noopener"', page)
 
 
+def _browser(p):
+    from playwright.sync_api import Error as PlaywrightError
+    for channel in ("chrome", "msedge"):
+        try:
+            return p.chromium.launch(channel=channel, headless=True)
+        except PlaywrightError:
+            continue
+    raise RuntimeError("没有找到 Google Chrome，无法生成图片或 PDF；可以改用「网页文件」导出")
+
+
+def render_pdf(page_html):
+    """A4 pages with selectable text and clickable links (Chrome's print to PDF)."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = _browser(p)
+        try:
+            page = browser.new_page()
+            page.set_content(page_html, wait_until="load")
+            return page.pdf(format="A4", print_background=True,
+                            margin={"top": "16mm", "bottom": "16mm", "left": "14mm", "right": "14mm"})
+        finally:
+            browser.close()
+
+
 def render_png(page_html):
     """A long screenshot of the page at phone-friendly width."""
-    from playwright.sync_api import Error as PlaywrightError, sync_playwright
+    from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
-        browser = None
-        for channel in ("chrome", "msedge"):
-            try:
-                browser = p.chromium.launch(channel=channel, headless=True)
-                break
-            except PlaywrightError:
-                continue
-        if not browser:
-            raise RuntimeError("没有找到 Google Chrome，无法生成图片；可以改用「网页文件」导出")
+        browser = _browser(p)
         try:
             page = browser.new_page(viewport={"width": 720, "height": 800})
             page.set_content(page_html, wait_until="load")

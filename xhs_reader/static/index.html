@@ -224,6 +224,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .acts button { border: 1px solid var(--line); background: none; color: var(--muted); border-radius: 7px; font-size: 12px; padding: 2px 10px; }
 .acts button:hover { color: var(--accent); border-color: var(--accent); }
 .export .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.export .seg.three { grid-template-columns: 1fr 1fr 1fr; }
 .mobile-qr { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
 .mobile-qr svg { width: 180px; height: 180px; border-radius: 8px; flex-shrink: 0; }
 .mobile-qr .u { font-size: 12px; color: var(--muted); word-break: break-all; }
@@ -254,7 +255,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .box textarea { font-size: 16px; }  /* smaller text makes iOS zoom in on focus */
   .modal { align-items: flex-end; }
   .sheet { width: 100vw; max-height: 92dvh; border-radius: 16px 16px 0 0; padding: 18px 16px calc(18px + env(safe-area-inset-bottom)); }
-  .settings .seg { grid-template-columns: 1fr; }
+  .settings .seg, .export .seg.three { grid-template-columns: 1fr; }
   .drawer { width: 100vw; padding-top: env(safe-area-inset-top); }
   .grid { grid-template-columns: repeat(2, 1fr); padding: 12px; gap: 10px; }
 }
@@ -648,7 +649,7 @@ function showExport(index) {
     <button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button>
     <h2>导出 / 分享</h2>
     <h3>内容</h3><div class="seg">${opt('xscope', 'one', '这一问一答', '只导出这个问题和回答', true)}${opt('xscope', 'all', '整个对话', '这个对话里的所有问答', false)}</div>
-    <h3>格式</h3><div class="seg">${opt('xfmt', 'png', '长图', '适合发微信、朋友圈', true)}${opt('xfmt', 'html', '网页文件', '保留表格和可点击的链接，用浏览器打开', false)}</div>
+    <h3>格式</h3><div class="seg three">${opt('xfmt', 'png', '长图', '适合发微信、朋友圈', true)}${opt('xfmt', 'pdf', 'PDF', 'A4 分页，链接可点，适合打印和存档', false)}${opt('xfmt', 'html', '网页文件', '保留表格和链接，用浏览器打开', false)}</div>
     <label class="opt"><input type="checkbox" id="xHide"><div>隐藏评论者昵称<small>把回答里引用的评论者昵称换成「某用户」。公开发布时建议勾选（笔记作者和笔记链接会保留）</small></div></label>
     <p class="note" style="font-size:12px">内容整理自小红书用户的笔记和评论。发给朋友没问题；公开发布时请注意不要大段转载别人的原文。</p>
     <div class="actions"><span class="msg-out" id="xOut"></span><button class="btn primary" id="xGo">导出</button></div></div>`;
@@ -660,7 +661,7 @@ function showExport(index) {
     const fmt = document.querySelector('input[name=xfmt]:checked').value;
     const body = {format: fmt, index: document.querySelector('input[name=xscope]:checked').value === 'one' ? index : null,
                   hide_names: $('#xHide').checked, save: !!window.pywebview};
-    $('#xGo').disabled = true; out(fmt === 'png' ? '正在生成图片…' : '正在生成…', true);
+    $('#xGo').disabled = true; out(fmt === 'html' ? '正在生成…' : fmt === 'pdf' ? '正在生成 PDF…' : '正在生成图片…', true);
     try {
       const r = await fetch(`/api/chats/${encodeURIComponent(current)}/export`, {method: 'POST',
         headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
@@ -675,7 +676,7 @@ function showExport(index) {
         a.href = URL.createObjectURL(await r.blob()); a.download = name;
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(a.href), 60000);
-        out(TOUCH ? '已生成。长图打开后长按可以保存到相册或发给朋友' : '已下载：' + esc(name), true);
+        out(TOUCH && fmt === 'png' ? '已生成。长图打开后长按可以保存到相册或发给朋友' : '已下载：' + esc(name), true);
       }
     } catch (e) { out(esc(e.message), false); }
     $('#xGo').disabled = false;
