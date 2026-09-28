@@ -13,7 +13,7 @@ CSS = """
 body { margin: 0; background: #f7f6f4; color: #1d1d1f; font: 15px/1.75 -apple-system, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif; }
 .page { max-width: 720px; margin: 0 auto; padding: 28px 22px 24px; }
 header { border-bottom: 1px solid #e5e3df; padding-bottom: 14px; margin-bottom: 8px; }
-.brand { color: #ff2442; font-weight: 700; font-size: 13px; }
+.brand { color: #7a7a80; font-size: 12px; }
 h1 { font-size: 21px; margin: 4px 0 2px; line-height: 1.4; }
 .meta { color: #7a7a80; font-size: 12px; }
 .q { display: flex; flex-direction: column; align-items: flex-end; margin: 22px 0 10px; gap: 6px; }
@@ -29,12 +29,18 @@ h1 { font-size: 21px; margin: 4px 0 2px; line-height: 1.4; }
 .md blockquote { margin: 8px 0; padding: 2px 12px; border-left: 3px solid #e5e3df; color: #7a7a80; }
 .md ul, .md ol { padding-left: 22px; }
 .md hr { border: 0; border-top: 1px solid #e5e3df; margin: 16px 0; }
+.src { margin-top: 22px; background: #fff; border: 1px solid #e5e3df; border-radius: 14px; padding: 12px 18px; }
+.src h3 { font-size: 15px; margin: 0 0 4px; }
+.src p { color: #7a7a80; font-size: 12.5px; margin: 0 0 6px; }
+.src ol { margin: 0; padding-left: 22px; font-size: 14px; }
+.src a { color: #ff2442; text-decoration: none; }
+.src .u { color: #7a7a80; font-size: 12px; word-break: break-all; }
 footer { color: #7a7a80; font-size: 12px; text-align: center; margin-top: 26px; line-height: 1.6; }
 @media print {
   body { background: #fff; }
   .page { max-width: none; padding: 0; }
   .a { border-color: #ddd; }
-  .q, .md tr, .md li, .md blockquote, .md img { break-inside: avoid; }
+  .q, .md tr, .md li, .md blockquote, .md img, .src li { break-inside: avoid; }
   .md h1, .md h2, .md h3 { break-after: avoid; }
 }
 """
@@ -107,6 +113,20 @@ def _replace_names(text, names):
     return text
 
 
+_NOTE_LINK = re.compile(r"\[([^\]]+)\]\((https?://(?:www\.)?xiaohongshu\.com/(?:explore|discovery/item)/([0-9a-zA-Z]+)[^)\s]*)\)")
+
+
+def _sources(texts):
+    """The Xiaohongshu notes the answers link to, in order, once each: [(title, url, id)]."""
+    seen, out = set(), []
+    for t in texts:
+        for title, url, nid in _NOTE_LINK.findall(t):
+            if nid not in seen:
+                seen.add(nid)
+                out.append((title, url, nid))
+    return out
+
+
 def _steps(msg):
     out = []
     for p in msg.get("parts", []):
@@ -131,7 +151,7 @@ def build_html(cid, index=None, hide_names=False):
     names = commenter_names(pairs) if hide_names else []
     title = pairs[0][0].get("text", "").strip().splitlines()[0][:60] if index is not None and pairs[0][0].get("text") \
         else chat.get("title", "小红书调研")
-    blocks = []
+    blocks, answers = [], []
     for q, a in pairs:
         imgs = ""
         for name in q.get("images") or []:
@@ -140,19 +160,28 @@ def build_html(cid, index=None, hide_names=False):
                 mime = MIME.get(f.suffix.lstrip(".").lower(), "image/png")
                 imgs += f'<img src="data:{mime};base64,{base64.b64encode(f.read_bytes()).decode()}">'
         text = "\n\n".join(p["text"] for p in a.get("parts", []) if p["type"] == "text")
+        answers.append(text)
         steps = _steps(a)
         blocks.append(
             f'<div class="q">{imgs}' + (f'<div class="bubble">{html.escape(q.get("text", ""))}</div>' if q.get("text") else "")
             + '</div><div class="a">' + (f'<div class="steps">{html.escape(steps)}</div>' if steps else "")
             + f'<div class="md">{_md(_hide(text, names))}</div></div>')
     date = time.strftime("%Y-%m-%d")
+    sources = _sources(answers)
+    src = "" if not sources else (
+        '<section class="src"><h3>原笔记</h3><p>以上内容整理自下面这些小红书笔记，完整内容和评论请看原文。</p><ol>'
+        + "".join(f'<li><a href="{html.escape(u)}">{html.escape(_hide(t, names))}</a><br>'
+                  f'<span class="u">xiaohongshu.com/explore/{html.escape(i)}</span></li>' for t, u, i in sources)
+        + "</ol></section>")
     page = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>{html.escape(title)}</title><style>{CSS}</style></head>
-<body><div class="page"><header><div class="brand">小红书调研助手</div><h1>{html.escape(title)}</h1>
+<body><div class="page"><header><div class="brand">调研笔记</div><h1>{html.escape(title)}</h1>
 <div class="meta">{chat.get('created', date)}</div></header>
 {''.join(blocks)}
-<footer>内容整理自小红书用户公开的笔记和评论，仅供参考，以原笔记为准。<br>由「小红书调研助手」生成 · {date}</footer>
+{src}
+<footer>内容整理自小红书用户公开的笔记和评论，仅供参考，以原笔记为准。<br>
+由开源工具 xhs-research-agent 生成，与小红书官方无关 · {date}</footer>
 </div></body></html>"""
     return title, re.sub(r'<a href="(https?://[^"]+)"', r'<a href="\1" target="_blank" rel="noopener"', page)
 

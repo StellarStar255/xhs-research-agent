@@ -650,7 +650,7 @@ function showExport(index) {
     <h2>导出 / 分享</h2>
     <h3>内容</h3><div class="seg">${opt('xscope', 'one', '这一问一答', '只导出这个问题和回答', true)}${opt('xscope', 'all', '整个对话', '这个对话里的所有问答', false)}</div>
     <h3>格式</h3><div class="seg three">${opt('xfmt', 'png', '长图', '适合发微信、朋友圈', true)}${opt('xfmt', 'pdf', 'PDF', 'A4 分页，链接可点，适合打印和存档', false)}${opt('xfmt', 'html', '网页文件', '保留表格和链接，用浏览器打开', false)}</div>
-    <label class="opt"><input type="checkbox" id="xHide"><div>隐藏评论者昵称<small>把回答里引用的评论者昵称换成「某用户」。公开发布时建议勾选（笔记作者和笔记链接会保留）</small></div></label>
+    <label class="opt on"><input type="checkbox" id="xHide" checked><div>隐藏评论者昵称<small>把回答里引用的评论者昵称换成「某用户」（笔记作者和笔记链接会保留）。只发给朋友时可以取消</small></div></label>
     <p class="note" style="font-size:12px">内容整理自小红书用户的笔记和评论。发给朋友没问题；公开发布时请注意不要大段转载别人的原文。</p>
     <div class="actions"><span class="msg-out" id="xOut"></span><button class="btn primary" id="xGo">导出</button></div></div>`;
   document.querySelectorAll('.export input[type=radio]').forEach(r => r.onchange = () =>
