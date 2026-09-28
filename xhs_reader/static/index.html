@@ -189,6 +189,8 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .step.warn { color: #c27c0e; }
 .limits { padding: 0 16px 10px; font-size: 12px; color: var(--muted); }
 .limits.cool { color: var(--accent); }
+.limits .why { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--muted); }
+.limits .why:hover { color: var(--accent); border-color: var(--accent); }
 .zoom img { max-width: 100%; border-radius: 8px; }
 .hint { max-width: 780px; margin: 6px auto 0; font-size: 12px; color: var(--muted); text-align: center; }
 
@@ -451,12 +453,30 @@ function renderLimits(l) {
     const t = left >= cap ? '已满' : left === 0 ? `${when(next)} 起恢复` : `${when(full)} 回满`;
     return `<div class="${left === 0 ? 'err-text' : ''}">${label}剩 ${left}/${cap} · ${t}</div>`;
   };
-  el.innerHTML = `<div>阅读额度（篇）</div>${line('1 小时 ', l.hour_left, l.hour_cap, l.hour_next, l.hour_full)}`
+  el.innerHTML = `<div>阅读额度（篇）· <a href="#" class="why" data-limits-why>主动限速 ⓘ</a></div>`
+    + line('1 小时 ', l.hour_left, l.hour_cap, l.hour_next, l.hour_full)
     + line('24 小时 ', l.day_left, l.day_cap, l.day_next, l.day_full);
-  el.title = '按滚动时间窗口计算：每篇笔记打开 1 小时 / 24 小时后，它占的额度就会恢复';
+  el.title = '';
+  el.querySelector('[data-limits-why]').onclick = e => { e.preventDefault(); showLimitsWhy(l); };
 }
 setInterval(async () => { try { renderLimits((await api('/api/status')).limits); } catch {} }, 60000);
 
+
+function showLimitsWhy(l) {
+  $('#sheet').innerHTML = `<div class="settings">
+    <button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button>
+    <h2>为什么有阅读额度？</h2>
+    <p>这是<b>本应用主动设置的上限</b>，不是小红书的限制，也不是出错了。</p>
+    <ul>
+      <li><b>减少对小红书的访问压力</b>：助手像人一样慢慢看，每篇笔记之间都会停顿，不做高频、大量的访问。</li>
+      <li><b>保护你的账号</b>：用的是你自己的小红书账号，访问太频繁可能被平台限制。</li>
+      <li><b>上限</b>：打开笔记 1 小时内最多 ${l.hour_cap} 篇、24 小时内最多 ${l.day_cap} 篇。只看搜索列表、看图片、重看之前读过的笔记不占额度；7 天内读过的笔记直接用本地缓存。</li>
+      <li><b>怎么恢复</b>：按滚动时间计算，每篇笔记打开 1 小时 / 24 小时后，它占的额度就会自动恢复。</li>
+      <li>如果小红书提示「访问过于频繁」，助手会立即停止，并在 3 小时内不再访问。</li>
+    </ul>
+    <p class="note">这些上限是固定的，没有提供调高的设置。</p></div>`;
+  $('#modal').classList.add('show');
+}
 
 /* ---------- conversation ---------- */
 // The open chat lives in the URL (#c=<id>) so a page refresh comes back to it,

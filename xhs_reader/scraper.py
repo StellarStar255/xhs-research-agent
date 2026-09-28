@@ -500,8 +500,8 @@ def open_notes(cards, max_comments=20, headless=True, progress=print):
     if budget <= 0:
         resets = lim.get("day_resets") if not lim["day_left"] else lim.get("hour_resets")
         when = _hm(resets) if resets else "稍后"
-        raise Limited(f"已达到阅读上限（1 小时内最多 {HOURLY_CAP} 篇、24 小时内最多 {DAILY_CAP} 篇），"
-                      f"{when} 之后可以继续。", opened)
+        raise Limited(f"已达到本应用主动设定的阅读上限（1 小时内最多 {HOURLY_CAP} 篇、24 小时内最多 {DAILY_CAP} 篇，"
+                      f"为了减少对小红书的访问压力、保护账号；不是小红书的限制），{when} 之后可以继续。", opened)
     if budget < len(todo):
         progress(f"额度只剩 {budget} 篇，本次只打开 {budget} 篇")
         todo = todo[:budget]
