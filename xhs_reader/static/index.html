@@ -42,6 +42,9 @@ aside { width: 260px; flex-shrink: 0; background: var(--side); border-right: 1px
 .chat-item.active { background: var(--accent-soft); }
 .chat-item .t { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-item .x { visibility: hidden; border: 0; background: none; color: var(--muted); padding: 0 4px; }
+.chat-item .x:hover { color: var(--accent); }
+.chat-item input.rename { flex: 1; min-width: 0; font: inherit; color: var(--ink); background: var(--panel);
+                          border: 1px solid var(--accent); border-radius: 6px; padding: 1px 6px; outline: none; }
 .chat-item:hover .x { visibility: visible; }
 .login { padding: 12px 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted);
          display: flex; align-items: center; gap: 6px; }
@@ -320,15 +323,52 @@ async function api(path, opts = {}) {
 }
 
 /* ---------- sidebar ---------- */
+let renaming = false;  // don't redraw the list while a name is being edited
 async function loadChats() {
   const list = await api('/api/chats');
+  if (renaming) return;
   $('#chats').innerHTML = list.map(c => `
     <div class="chat-item ${c.id === current ? 'active' : ''}" data-id="${esc(c.id)}">
-      ${c.running ? '<span class="spin"></span>' : ''}<span class="t">${esc(c.title)}</span>
+      ${c.running ? '<span class="spin"></span>' : ''}<span class="t" title="双击重命名">${esc(c.title)}</span>
+      <button class="x" data-ren="${esc(c.id)}" title="重命名">✎</button>
       <button class="x" data-del="${esc(c.id)}" title="删除">×</button>
     </div>`).join('');
 }
+function startRename(item) {
+  const t = item.querySelector('.t');
+  if (!t || renaming) return;
+  renaming = true;
+  const old = t.textContent;
+  const input = document.createElement('input');
+  input.className = 'rename'; input.value = old; input.maxLength = 60;
+  t.replaceWith(input);
+  item.querySelectorAll('.x').forEach(b => b.hidden = true);
+  input.focus(); input.select();
+  let done = false;
+  const finish = async save => {
+    if (done) return;
+    done = true;
+    const title = input.value.trim();
+    renaming = false;
+    if (save && title && title !== old) {
+      try {
+        await api(`/api/chats/${encodeURIComponent(item.dataset.id)}/rename`, {method: 'POST', body: JSON.stringify({title})});
+        if (item.dataset.id === current) $('#tbTitle').textContent = title;
+      } catch (e) { console.warn(e); }
+    }
+    loadChats();
+  };
+  input.onkeydown = e => {
+    if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') finish(false);
+  };
+  input.onblur = () => finish(true);
+  input.onclick = e => e.stopPropagation();
+}
+$('#chats').ondblclick = e => { const item = e.target.closest('.chat-item'); if (item && e.target.classList.contains('t')) startRename(item); };
 $('#chats').onclick = async e => {
+  if (e.target.dataset.ren) { e.stopPropagation(); return startRename(e.target.closest('.chat-item')); }
+  if (e.target.closest('input.rename')) return;
   const del = e.target.dataset.del;
   if (del) {
     e.stopPropagation();
@@ -989,7 +1029,9 @@ const closeSide = () => document.body.classList.remove('side-open');
 $('#menuBtn').onclick = () => document.body.classList.toggle('side-open');
 $('#backdrop').onclick = closeSide;
 $('#tbNew').onclick = () => { closeSide(); newChat(); };
-$('#chats').addEventListener('click', e => { if (e.target.closest('.chat-item') && !e.target.dataset.del) closeSide(); });
+$('#chats').addEventListener('click', e => {
+  if (e.target.closest('.chat-item') && !e.target.dataset.del && !e.target.dataset.ren && !e.target.closest('input.rename')) closeSide();
+});
 $('#newChat').addEventListener('click', closeSide);
 $('#gear').addEventListener('click', closeSide);
 if (matchMedia('(max-width: 760px)').matches) $('#input').placeholder = '问点什么……';

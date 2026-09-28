@@ -294,6 +294,22 @@ def reveal_export():
     return {"ok": True}
 
 
+class RenameReq(BaseModel):
+    title: str
+
+
+@app.post("/api/chats/{cid}/rename")
+def rename_chat(cid: str, req: RenameReq):
+    title = " ".join(req.title.split())[:60]
+    if not title:
+        raise HTTPException(400, "名称不能为空")
+    try:
+        agent.rename(cid, title)
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(404, "找不到这个对话")
+    return {"title": title}
+
+
 @app.post("/api/chats/{cid}/stop")
 def stop(cid: str):
     agent.stop(cid)

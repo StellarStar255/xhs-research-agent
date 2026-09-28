@@ -97,6 +97,17 @@ def update(cid, fn):
         _save(chat)
 
 
+def rename(cid, title):
+    """Set a chat's title, keeping its place in the list (sorted by modification time)."""
+    with _lock:
+        chat = load(cid)
+        f = _path(cid)
+        st = f.stat()
+        chat["title"] = title
+        _save(chat)
+        os.utime(f, (st.st_atime, st.st_mtime))
+
+
 def list_chats():
     if not CHATS_DIR.exists():
         return []
