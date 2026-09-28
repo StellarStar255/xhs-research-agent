@@ -413,6 +413,9 @@ def status(refresh: bool = False):
 
 
 def _login_status(refresh):
+    # Nothing touches Xiaohongshu before the user has accepted the usage notice.
+    if not settings.notice_accepted():
+        return {"logged_in": None, "needs_notice": True}
     # Checking login launches a browser, so cache it; skip while scraping or cooling down.
     if scraper.LOCK_FILE.exists() or scraper.limits()["cooldown_until"]:
         return _status["value"] or {"busy": True}

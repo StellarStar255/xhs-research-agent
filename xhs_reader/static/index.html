@@ -403,6 +403,7 @@ async function loadStatus(refresh) {
   try {
     const s = await api('/api/status' + (refresh ? '?refresh=1' : ''));
     renderLimits(s.limits);
+    if (s.needs_notice) { $('#loginText').textContent = '同意使用须知后检查登录'; return; }
     if (s.busy) { if (loggedIn === null) $('#loginText').textContent = s.limits?.cooldown_until ? '登录状态：冷却中不检查' : '浏览器忙碌中…'; return; }
     const wasError = loginError;
     loginError = !s.logged_in && s.error && s.error.includes('Chrome') ? s.error : '';
