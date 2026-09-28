@@ -446,11 +446,11 @@ function renderLimits(l) {
   if (l.cooldown_until) { el.textContent = `⚠ 小红书提示访问过于频繁，已暂停，${when(l.cooldown_until)} 后恢复`; return; }
   // Rolling windows: each note frees its slot 1 h / 24 h after it was opened.
   const line = (label, left, cap, next, full) => {
-    const t = left >= cap ? '' : left === 0 ? `，${when(next)} 起恢复` : `，${when(full)} 全部恢复`;
-    return `<div class="${left === 0 ? 'err-text' : ''}">${label}剩 ${left}/${cap} 篇${t}</div>`;
+    const t = left >= cap ? '已满' : left === 0 ? `${when(next)} 起恢复` : `${when(full)} 回满`;
+    return `<div class="${left === 0 ? 'err-text' : ''}">${label}剩 ${left}/${cap} · ${t}</div>`;
   };
-  el.innerHTML = `<div>抓取额度</div>${line('1 小时内', l.hour_left, l.hour_cap, l.hour_next, l.hour_full)}`
-    + line('24 小时内', l.day_left, l.day_cap, l.day_next, l.day_full);
+  el.innerHTML = `<div>抓取额度（篇）</div>${line('1 小时 ', l.hour_left, l.hour_cap, l.hour_next, l.hour_full)}`
+    + line('24 小时 ', l.day_left, l.day_cap, l.day_next, l.day_full);
   el.title = '按滚动时间窗口计算：每篇笔记打开 1 小时 / 24 小时后，它占的额度就会恢复';
 }
 setInterval(async () => { try { renderLimits((await api('/api/status')).limits); } catch {} }, 60000);
