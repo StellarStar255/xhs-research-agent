@@ -167,6 +167,12 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .send { background: var(--accent); color: #fff; border: 0; border-radius: 10px; padding: 7px 16px; font-weight: 600; }
 .send:disabled { opacity: .4; cursor: default; }
 .send.stop { background: var(--ink); color: var(--bg); }
+.stopbtn { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 10px; padding: 6px 12px; font-weight: 600; }
+.stopbtn:hover { border-color: var(--accent); color: var(--accent); }
+.msg.user.queued .bubble { opacity: .55; }
+.qnote { font-size: 12px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+.qnote button { border: 0; background: none; color: var(--muted); padding: 0 2px; font-size: 12px; }
+.qnote button:hover { color: var(--accent); }
 .box { flex-wrap: wrap; }
 .thumbs { width: 100%; display: flex; gap: 8px; flex-wrap: wrap; }
 .thumbs:empty { display: none; }
@@ -278,9 +284,10 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
       <button class="attach" id="attach" title="添加图片">＋</button>
       <input type="file" id="file" accept="image/*" multiple hidden>
       <textarea id="input" rows="1" placeholder="问点什么，也可以粘贴或拖入图片……"></textarea>
+      <button class="stopbtn" id="stop" hidden title="停止当前回答（排队的消息会接着发送）">■ 停止</button>
       <button class="send" id="send" disabled>发送</button>
     </div>
-    <div class="hint">助手会放慢速度浏览小红书，减少对平台的访问压力，先看搜索列表再挑几篇打开，每篇约 10 秒 · 支持粘贴 / 拖入图片 · Enter 发送，Shift+Enter 换行</div>
+    <div class="hint">助手会放慢速度浏览小红书，减少对平台的访问压力，先看搜索列表再挑几篇打开，每篇约 10 秒 · 回答过程中也可以继续发送（会排队） · 支持粘贴 / 拖入图片 · Enter 发送，Shift+Enter 换行</div>
   </div>
 </main>
 <div class="drawer" id="drawer">
@@ -492,7 +499,7 @@ async function openChat(id, restoring = false) {
   if (current !== id) return;
   $('#tbTitle').textContent = chat.title || '小红书调研助手';
   running = chat.running;
-  const json = JSON.stringify(chat.messages);
+  const json = JSON.stringify([chat.messages, chat.queued || []]);
   if (json !== lastJson) {
     lastJson = json;
     const pos = restoring ? savedScroll(id) : null;
@@ -501,7 +508,8 @@ async function openChat(id, restoring = false) {
   }
   updateComposer();
   if (switching) loadChats();
-  if (running) pollTimer = setTimeout(() => openChat(id), 1200);
+  // Keep polling while queued messages wait: the next turn starts right after this one ends.
+  if (running || (chat.queued || []).length) pollTimer = setTimeout(() => openChat(id), 1200);
   else if (!switching) loadChats();
 }
 
@@ -576,7 +584,16 @@ function renderThread(chat, jump) {
     const acts = m.status === 'done' && (m.parts || []).some(p => p.type === 'text')
       ? `<div class="acts"><button data-copy="${i}">复制</button><button data-export="${i}">导出 / 分享</button></div>` : '';
     return `<div class="msg"><img class="avatar" src="/icon.png" alt=""><div class="body">${parts}${draft}${busy}${err}${meta}${acts}</div></div>`;
+  }).join('') + (chat.queued || []).map(q => {
+    const imgs = (q.images || []).map(n => `<img src="/api/chats/${esc(chat.id)}/images/${esc(n)}" data-zoom>`).join('');
+    return `<div class="msg user queued"><div class="col">${imgs ? `<div class="uimgs">${imgs}</div>` : ''}
+      ${q.text ? `<div class="bubble">${esc(q.text)}</div>` : ''}
+      <div class="qnote">排队中 · 当前回答结束后自动发送<button data-unqueue="${esc(q.id)}">取消</button></div></div></div>`;
   }).join('');
+  document.querySelectorAll('[data-unqueue]').forEach(b => b.onclick = async () => {
+    try { await api(`/api/chats/${encodeURIComponent(chat.id)}/queue/${b.dataset.unqueue}`, {method: 'DELETE'}); } catch {}
+    openChat(chat.id);
+  });
   document.querySelectorAll('.md a').forEach(a => { a.target = '_blank'; a.rel = 'noopener'; });
   document.querySelectorAll('[data-session]').forEach(b => b.onclick = () => openNotes(b.dataset.session));
   document.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
@@ -658,10 +675,10 @@ function showExport(index) {
 }
 
 function updateComposer() {
-  const btn = $('#send');
-  btn.textContent = running ? '停止' : '发送';
-  btn.classList.toggle('stop', running);
-  btn.disabled = !running && !$('#input').value.trim() && !pending.length;
+  // While an answer is running you can keep sending: messages queue up (see agent.submit).
+  $('#send').disabled = !$('#input').value.trim() && !pending.length;
+  $('#send').textContent = running ? '排队发送' : '发送';
+  $('#stop').hidden = !running;
 }
 
 /* ---------- image attachments ---------- */
@@ -721,23 +738,22 @@ document.addEventListener('drop', e => {
 
 async function send() {
   const text = $('#input').value.trim();
-  if ((!text && !pending.length) || running) return;
+  if (!text && !pending.length) return;
   const images = pending;
   $('#input').value = ''; pending = []; renderThumbs(); autosize();
   try {
-    const {id} = await api('/api/chats', {method: 'POST', body: JSON.stringify({
+    const {id, queued} = await api('/api/chats', {method: 'POST', body: JSON.stringify({
       message: text, chat_id: current, images: images.map(({media_type, data}) => ({media_type, data}))})});
-    current = null;  // force a full render + jump to bottom
+    if (!queued) current = null;  // force a full render + jump to bottom
     await openChat(id);
+    if (queued) $('#scroll').scrollTop = $('#scroll').scrollHeight;
   } catch (e) {
     $('#input').value = text; pending = images; renderThumbs();
     if (e.message.includes('设置')) openSettings(e.message); else alert(e.message);
   }
 }
-$('#send').onclick = async () => {
-  if (running) { await api(`/api/chats/${current}/stop`, {method: 'POST'}); return; }
-  send();
-};
+$('#send').onclick = () => send();
+$('#stop').onclick = async () => { if (current) await api(`/api/chats/${current}/stop`, {method: 'POST'}).catch(() => {}); };
 function autosize() { const t = $('#input'); t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; updateComposer(); }
 $('#input').oninput = autosize;
 $('#input').onkeydown = e => {

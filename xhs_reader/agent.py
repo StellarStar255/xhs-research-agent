@@ -138,11 +138,85 @@ def stop(cid):
 
 # ---------- turns ----------
 
-def send(cid, text, images=()):
+MAX_QUEUED = 5
+
+
+def submit(cid, text, images=()):
+    """Send a message: start a turn now, or — while this chat's turn is still running —
+    queue it to be sent when that turn ends. Returns (chat id, queued)."""
+    with _lock:
+        if cid and is_running(cid):
+            chat = load(cid)
+            queue = chat.setdefault("queued", [])
+            if len(queue) >= MAX_QUEUED:
+                raise RuntimeError(f"最多排队 {MAX_QUEUED} 条，请等当前回答结束")
+            qid = uuid.uuid4().hex[:8]
+            queue.append({"id": qid, "text": text, "images": _save_images(cid, images, f"q{qid}")})
+            _save(chat)
+            return cid, True
+        return send(cid, text, images), False
+
+
+def unqueue(cid, qid):
+    """Drop a queued message (and its images) before it's sent."""
+    with _lock:
+        chat = load(cid)
+        keep, gone = [], []
+        for q in chat.get("queued") or []:
+            (gone if q["id"] == qid else keep).append(q)
+        chat["queued"] = keep
+        _save(chat)
+    for q in gone:
+        for n in q.get("images") or []:
+            (image_dir(cid) / n).unlink(missing_ok=True)
+    return bool(gone)
+
+
+def _save_images(cid, images, prefix):
+    names = []
+    for img in images:
+        d = image_dir(cid)
+        d.mkdir(parents=True, exist_ok=True)
+        name = f"{prefix}_{len(names)}.{EXT[img['media_type']]}"
+        (d / name).write_bytes(base64.b64decode(img["data"]))
+        names.append(name)
+    return names
+
+
+def _send_queued_later(cid):
+    """After a turn ends, send whatever was queued meanwhile as one message."""
+    def run():
+        for _ in range(300):  # the finishing turn's thread exits right after finish()
+            if not is_running(cid):
+                break
+            time.sleep(0.2)
+        with _lock:
+            try:
+                chat = load(cid)
+            except (FileNotFoundError, ValueError):
+                return
+            queue = chat.get("queued") or []
+            if not queue or is_running(cid):
+                return
+            chat["queued"] = []
+            _save(chat)
+            text = "\n\n".join(q["text"] for q in queue if q.get("text"))
+            names = [n for q in queue for n in q.get("images") or []]
+            try:
+                send(cid, text, names=names)
+            except Exception as e:
+                def fail(chat, msg, e=e):
+                    msg.update(status="error", error=f"排队的消息没能发送：{e}")
+                update(cid, fail)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def send(cid, text, images=(), names=None):
     """Start a turn. Returns the chat id (creating a chat if cid is None).
 
     images: [{"media_type": "image/png", "data": <base64>}] — saved next to the chat
-    for display and passed to the model as image input.
+    for display and passed to the model as image input. names: images already saved in
+    the chat's image folder (queued messages) instead.
     """
     from . import llm  # avoid a circular import at module load
 
@@ -163,13 +237,10 @@ def send(cid, text, images=()):
             title = text.strip().splitlines()[0][:30] if text.strip() else "图片分析"
             chat = {"id": cid, "title": title, "backend": conf["backend"], "claude_session": None,
                     "created": time.strftime("%Y-%m-%d %H:%M"), "messages": []}
-        names = []
-        for img in images:
-            d = image_dir(cid)
-            d.mkdir(parents=True, exist_ok=True)
-            name = f"{len(chat['messages']):03d}_{len(names)}.{EXT[img['media_type']]}"
-            (d / name).write_bytes(base64.b64decode(img["data"]))
-            names.append(name)
+        if names is None:
+            names = _save_images(cid, images, f"{len(chat['messages']):03d}")
+        else:
+            images = _user_images(cid, names)
         chat["messages"].append({"role": "user", "text": text, "images": names})
         chat["messages"].append({"role": "assistant", "parts": [], "draft": "", "status": "running",
                                  "started": time.time(), "model": _model_label(chat)})
@@ -457,6 +528,7 @@ def finish(cid, stopped=False, error=None):
     update(cid, fn)
     if not any(is_running(c) for c in list(_runs) if c != cid):
         _keep_awake(False)
+    _send_queued_later(cid)
 
 
 def _pump(cid, proc):
@@ -507,4 +579,7 @@ def recover():
         if msg.get("status") == "running":
             msg["status"] = "error"
             msg["error"] = "服务重启，本轮被中断"
+            lost = [q.get("text", "") for q in chat.pop("queued", None) or []]
+            if lost:
+                msg["error"] += "；排队中没发出的消息：" + " / ".join(t[:40] for t in lost if t)
             _save(chat)

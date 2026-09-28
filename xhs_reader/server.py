@@ -186,7 +186,8 @@ def send(req: ChatReq):
         if len(img.data) > 7_000_000:  # ~5MB decoded
             raise HTTPException(400, "图片太大（单张最多约 5MB）")
     try:
-        return {"id": agent.send(req.chat_id, req.message.strip(), [i.model_dump() for i in req.images])}
+        cid, queued = agent.submit(req.chat_id, req.message.strip(), [i.model_dump() for i in req.images])
+        return {"id": cid, "queued": queued}
     except FileNotFoundError:
         raise HTTPException(404, "对话不存在")
     except RuntimeError as e:
@@ -308,6 +309,16 @@ def rename_chat(cid: str, req: RenameReq):
     except (FileNotFoundError, ValueError):
         raise HTTPException(404, "找不到这个对话")
     return {"title": title}
+
+
+@app.delete("/api/chats/{cid}/queue/{qid}")
+def unqueue(cid: str, qid: str):
+    try:
+        if not agent.unqueue(cid, qid):
+            raise HTTPException(404, "这条消息已经发出了")
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(404, "找不到这个对话")
+    return {"ok": True}
 
 
 @app.post("/api/chats/{cid}/stop")

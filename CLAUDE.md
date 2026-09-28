@@ -38,6 +38,8 @@ Phone access (xhs_reader/remote.py, settings mobile{enabled,token,port}, off by 
 uvicorn server on 0.0.0.0:8780–8799 for the same app. server.remote_guard treats every request not
 from the main loopback server as remote: it needs the key (?k= once, then cookie xhs_k) and can't
 POST settings/login/update/shutdown or touch /api/mobile. agent keeps macOS awake (caffeinate) during turns.
+Sending while a turn runs queues the message (agent.submit → chat["queued"], ≤5); when the turn
+ends (done, error or stopped) agent._send_queued_later sends all queued messages as one turn.
 Sharing (xhs_reader/export.py): per-answer 复制 (plain text) and 导出 (one Q&A or whole chat → standalone
 HTML, or a long PNG rendered by a fresh headless Chrome without the profile). hide_names replaces
 commenters' nicknames only where used as names (quoted/@/…说), never inside URLs, never note authors.
