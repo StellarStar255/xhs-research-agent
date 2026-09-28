@@ -303,8 +303,8 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
     <li><b>这是一个开源的个人学习、研究工具，与小红书（行吟信息科技）没有任何关联。</b></li>
     <li>它会用<b>你自己登录的小红书账号</b>自动搜索和浏览笔记。自动化访问可能违反《小红书用户服务协议》，账号有可能被限流或封禁，<b>风险由你自己承担</b>。工具已内置访问频率限制（每小时、每天都有上限），请不要设法绕过。</li>
     <li><b>禁止用于</b>：商业用途；大规模或高频抓取；出售、公开或再分发抓取到的内容和数据；绕过验证码等安全措施；任何侵犯他人著作权、隐私或个人信息的行为。</li>
-    <li>笔记和评论的著作权归原作者所有。抓取到的数据只保存在你自己的电脑上，请不要外传，并定期清理。</li>
-    <li>回答问题时，你的问题、附带的图片和抓取到的笔记内容会发送给你选择的大模型服务（Claude Code 或第三方 API）处理，请同时遵守对应服务商的条款。</li>
+    <li>笔记和评论的著作权归原作者所有。读取到的内容只保存在你自己的电脑上，请不要外传，并定期清理。</li>
+    <li>回答问题时，你的问题、附带的图片和读取到的笔记内容会发送给你选择的大模型服务（Claude Code 或第三方 API）处理，请同时遵守对应服务商的条款。</li>
     <li>本软件按「原样」提供，不提供任何担保。因使用本软件产生的一切后果由使用者自行承担。</li>
   </ul>
   <label class="agree"><input type="checkbox" id="noticeCheck"> 我已阅读并理解以上内容，自愿承担相应风险</label>
@@ -450,7 +450,7 @@ function renderLimits(l) {
     const t = left >= cap ? '已满' : left === 0 ? `${when(next)} 起恢复` : `${when(full)} 回满`;
     return `<div class="${left === 0 ? 'err-text' : ''}">${label}剩 ${left}/${cap} · ${t}</div>`;
   };
-  el.innerHTML = `<div>抓取额度（篇）</div>${line('1 小时 ', l.hour_left, l.hour_cap, l.hour_next, l.hour_full)}`
+  el.innerHTML = `<div>阅读额度（篇）</div>${line('1 小时 ', l.hour_left, l.hour_cap, l.hour_next, l.hour_full)}`
     + line('24 小时 ', l.day_left, l.day_cap, l.day_next, l.day_full);
   el.title = '按滚动时间窗口计算：每篇笔记打开 1 小时 / 24 小时后，它占的额度就会恢复';
 }
@@ -490,7 +490,7 @@ function newChat() {
     </div></div>`;
     updateComposer(); loadChats(); return;
   }
-  $('#thread').innerHTML = `<div class="hello"><h1>想在小红书上了解点什么？</h1>
+  $('#thread').innerHTML = `<div class="hello"><h1>想了解点什么？</h1>
     <p>我会去小红书搜索、读笔记和评论区，然后给你一个靠谱的答案</p>
     <div class="examples">${EXAMPLES.map(x => `<button>${esc(x)}</button>`).join('')}</div></div>`;
   document.querySelectorAll('.examples button').forEach(b => b.onclick = () => { $('#input').value = b.textContent; send(); });
@@ -865,11 +865,11 @@ async function openSettings(message) {
       <label class="opt ${ui.mode === 'browser' ? 'on' : ''}"><input type="radio" name="uimode" value="browser" ${ui.mode === 'browser' ? 'checked' : ''}>
         <div>浏览器<small>在你的浏览器里打开；点 Dock 图标可以再次打开页面</small></div></label>
     </div>` : ''}
-    <h3>抓取方式</h3><div class="seg">
+    <h3>浏览器窗口</h3><div class="seg">
       <label class="opt ${bw.mode === 'background' ? 'on' : ''}"><input type="radio" name="bwmode" value="background" ${bw.mode === 'background' ? 'checked' : ''}>
         <div>后台运行（默认）<small>不显示窗口</small></div></label>
       <label class="opt ${bw.mode === 'visible' ? 'on' : ''}"><input type="radio" name="bwmode" value="visible" ${bw.mode === 'visible' ? 'checked' : ''}>
-        <div>显示浏览器窗口<small>抓取时显示 Chrome 窗口，可以看到助手的每一步操作</small></div></label>
+        <div>显示浏览器窗口<small>读小红书时显示 Chrome 窗口，可以看到助手的每一步操作</small></div></label>
     </div>
     <h3>手机访问</h3>
     <label class="opt ${mob.enabled ? 'on' : ''}"><input type="checkbox" id="sMobile" ${mob.enabled ? 'checked' : ''}>
@@ -913,7 +913,7 @@ async function openSettings(message) {
   document.querySelectorAll('input[name=backend]').forEach(r => r.onchange = sync);
   document.querySelectorAll('input[name=bwmode]').forEach(r => r.onchange = async () => {
     document.querySelectorAll('input[name=bwmode]').forEach(x => x.closest('label').classList.toggle('on', x.checked));
-    try { await api('/api/browser-window', {method: 'POST', body: JSON.stringify({mode: r.value})}); out('抓取方式已切换，下次抓取时生效', true); }
+    try { await api('/api/browser-window', {method: 'POST', body: JSON.stringify({mode: r.value})}); out('已切换，下次读小红书时生效', true); }
     catch (e) { out(e.message, false); }
   });
   const renderMobile = () => {

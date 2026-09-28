@@ -15,7 +15,7 @@ from . import scraper, store
 
 
 LOGIN_MSG = "NOT_LOGGED_IN: 小红书还没有登录，或者登录已过期。请不要再重试搜索；告诉用户点击页面上的「扫码登录」按钮，用小红书 App 扫码登录后再问一次。"
-LIMITED_HINT = "请不要再重试抓取，用已有信息回答，并告诉用户什么时候可以再查。"
+LIMITED_HINT = "请不要再重试读取，用已有信息回答，并告诉用户什么时候可以再查。"
 
 
 def _type(n):

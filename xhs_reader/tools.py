@@ -17,13 +17,13 @@ TOOLS = [
     {"type": "function", "function": {
         "name": "search_xiaohongshu",
         "description": "在小红书搜索一个关键词，返回前约 20 篇笔记的列表（标题、作者、类型、赞/藏/评数）。"
-                       "只看列表，不打开笔记，不占抓取额度。之后用 open_notes 挑值得读的打开。",
+                       "只看列表，不打开笔记，不占阅读额度。之后用 open_notes 挑值得读的打开。",
         "parameters": {"type": "object", "properties": {
             "keyword": {"type": "string", "description": "搜索关键词，用小红书用户会用的口语化中文"},
         }, "required": ["keyword"]}}},
     {"type": "function", "function": {
         "name": "open_notes",
-        "description": "打开搜索列表里挑中的笔记，读正文和热门评论（慢，每篇约 10 秒，每篇占 1 个抓取额度；"
+        "description": "打开搜索列表里挑中的笔记，读正文和热门评论（慢，每篇约 10 秒，每篇占 1 个阅读额度；"
                        "最近几天打开过的直接用缓存、不占额度）。",
         "parameters": {"type": "object", "properties": {
             "session": {"type": "string", "description": "搜索结果里给出的 SESSION id"},
@@ -38,7 +38,7 @@ TOOLS = [
         }, "required": ["session"]}}},
     {"type": "function", "function": {
         "name": "view_note_images",
-        "description": "查看某篇已打开笔记的图片（很多笔记的内容写在图片里，正文很短）。不打开笔记页面，不占抓取额度。"
+        "description": "查看某篇已打开笔记的图片（很多笔记的内容写在图片里，正文很短）。不打开笔记页面，不占阅读额度。"
                        "每次最多 4 张，每轮对话最多 12 张。",
         "parameters": {"type": "object", "properties": {
             "session": {"type": "string", "description": "搜索结果里给出的 SESSION id"},
@@ -79,7 +79,7 @@ class ToolRunner:
             out, _ = p.communicate(timeout=900)
         except subprocess.TimeoutExpired:
             procutil.kill_tree(p)
-            return "ERROR: 抓取超时", True
+            return "ERROR: 读取超时", True
         finally:
             self.on_proc(None)
         return out[-60000:], p.returncode != 0

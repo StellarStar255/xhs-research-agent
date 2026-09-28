@@ -111,7 +111,7 @@ def _check_blocked(page):
         blocked = any(k in text for k in ("访问频繁", "安全限制", "300013", "请完成验证", "滑块"))
     if blocked:
         until = _start_cooldown("小红书提示访问过于频繁 (300013)")
-        raise Limited(f"小红书提示访问过于频繁，已暂停抓取，{_hm(until)} 之后再试。")
+        raise Limited(f"小红书提示访问过于频繁，已暂停读取，{_hm(until)} 之后再试。")
 
 
 def _pause(lo=1.5, hi=3.5):
@@ -439,7 +439,7 @@ def _as_item(card):
 def _check_cooldown():
     lim = limits()
     if lim["cooldown_until"]:
-        raise Limited(f"小红书提示访问过于频繁，已暂停抓取，{_hm(lim['cooldown_until'])} 之后再试。")
+        raise Limited(f"小红书提示访问过于频繁，已暂停读取，{_hm(lim['cooldown_until'])} 之后再试。")
     return lim
 
 
@@ -500,7 +500,7 @@ def open_notes(cards, max_comments=20, headless=True, progress=print):
     if budget <= 0:
         resets = lim.get("day_resets") if not lim["day_left"] else lim.get("hour_resets")
         when = _hm(resets) if resets else "稍后"
-        raise Limited(f"已达到抓取上限（1 小时内最多 {HOURLY_CAP} 篇、24 小时内最多 {DAILY_CAP} 篇），"
+        raise Limited(f"已达到阅读上限（1 小时内最多 {HOURLY_CAP} 篇、24 小时内最多 {DAILY_CAP} 篇），"
                       f"{when} 之后可以继续。", opened)
     if budget < len(todo):
         progress(f"额度只剩 {budget} 篇，本次只打开 {budget} 篇")
