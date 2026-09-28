@@ -21,8 +21,32 @@ LOCKED_PAGE = """<!doctype html><meta charset="utf-8"><meta name="viewport" cont
 <h2>需要扫码连接</h2><p>请在电脑上打开「设置 → 手机访问」，用手机扫描那里的二维码。</p></body>"""
 
 
+_LOOPBACK = {"localhost", "127.0.0.1", "[::1]"}
+
+
+def _hostname(host):
+    host = host.lower()
+    if host.startswith("["):
+        return host[:host.find("]") + 1]
+    return host.rsplit(":", 1)[0]
+
+
 @app.middleware("http")
 async def remote_guard(request: Request, call_next):
+    # Other websites open in the user's browser can send requests to this local server:
+    # - DNS rebinding reaches it under a foreign host name → the loopback server only
+    #   answers to localhost / 127.0.0.1;
+    # - cross-site requests (CSRF) → no state change unless the request comes from our
+    #   own pages. Clients that send no Origin (curl, the app's own helpers) aren't
+    #   browsers acting for another site, so they pass.
+    host = request.headers.get("host", "")
+    if remote.main_port is not None and not remote.is_remote(request.scope) and _hostname(host) not in _LOOPBACK:
+        return JSONResponse({"detail": "不允许的访问地址"}, status_code=403)
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        origin = request.headers.get("origin")
+        if request.headers.get("sec-fetch-site") == "cross-site" or (
+                origin is not None and origin != f"{request.url.scheme}://{host}"):
+            return JSONResponse({"detail": "拒绝来自其他网站的请求"}, status_code=403)
     if not remote.is_remote(request.scope):
         return await call_next(request)
     from_query = request.query_params.get("k")

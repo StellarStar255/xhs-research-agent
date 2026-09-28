@@ -34,6 +34,9 @@ Entry point: `python -m xhs_reader` (xhs_reader/app.py) picks a free port (8765 
 another app on the maintainer's Mac), reuses a running instance, opens the browser.
 Packaging: packaging/*.spec (PyInstaller, two exes: windowed GUI + console `xhs-cli`),
 packaging/macos_sign_notarize.sh, packaging/windows_installer.iss, .github/workflows/release.yml.
+Browser-side protection (server.remote_guard): the loopback server only answers Host localhost/127.0.0.1
+(DNS rebinding), and POST/DELETE with a foreign Origin or Sec-Fetch-Site: cross-site get 403 (CSRF);
+requests without Origin (curl, the app's own helpers) pass.
 Phone access (xhs_reader/remote.py, settings mobile{enabled,token,port}, off by default): a second
 uvicorn server on 0.0.0.0:8780–8799 for the same app. server.remote_guard treats every request not
 from the main loopback server as remote: it needs the key (?k= once, then cookie xhs_k) and can't
