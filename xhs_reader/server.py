@@ -368,6 +368,39 @@ def session(sid: str):
         raise HTTPException(404)
 
 
+_SAFE_NAME = re.compile(r"^[\w.-]+$")
+
+
+@app.get("/api/sessions/{sid}/notes/{index}/images")
+def note_images(sid: str, index: int):
+    """The images the assistant looked at for one note (downloaded by view_note_images)."""
+    try:
+        notes = store.read_notes(sid)
+        folder = store.path(sid) / "images"
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(404)
+    if not 1 <= index <= len(notes):
+        raise HTTPException(404)
+    n = notes[index - 1]
+    nid = str(n.get("id") or index)
+    files = sorted((folder / nid).glob("*"), key=lambda f: (len(f.stem), f.stem)) if _SAFE_NAME.match(nid) else []
+    return {"title": n.get("title") or "", "url": n.get("url") or "", "author": n.get("author") or "",
+            "images": [f"/api/sessions/{sid}/image/{nid}/{f.name}" for f in files if f.is_file()]}
+
+
+@app.get("/api/sessions/{sid}/image/{nid}/{name}")
+def note_image(sid: str, nid: str, name: str):
+    if not (_SAFE_NAME.match(nid) and _SAFE_NAME.match(name)):
+        raise HTTPException(404)
+    try:
+        f = store.path(sid) / "images" / nid / name
+    except ValueError:
+        raise HTTPException(404)
+    if not f.is_file():
+        raise HTTPException(404)
+    return FileResponse(f)
+
+
 @app.get("/api/settings")
 def get_settings():
     return settings.public()

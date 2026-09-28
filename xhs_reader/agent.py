@@ -423,6 +423,20 @@ def tool_step(name, args, tool_id):
     return step
 
 
+def web_links(text, limit=10):
+    """[{title, url}] from a WebSearch result ('Links: [{"title": …, "url": …}, …]')."""
+    out, seen = [], set()
+    for title, url in re.findall(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"url"\s*:\s*"(https?://[^"]+)"', text or ""):
+        if url not in seen:
+            seen.add(url)
+            try:
+                title = json.loads(f'"{title}"')
+            except ValueError:
+                pass
+            out.append({"title": title[:120], "url": url})
+    return out[:limit]
+
+
 def apply_images_output(step, text, n_images, is_error=False):
     """Fill a view_note_images step: the tool's first text line holds 「title」."""
     m = re.search(r"「(.+?)」", text or "")
@@ -487,6 +501,7 @@ def _handle(chat, msg, ev):
                 if p.get("tool_id") == b.get("tool_use_id"):
                     if p["type"] == "web":
                         p["status"] = "error" if b.get("is_error") else "done"
+                        p["links"] = web_links(_result_text(b))
                     elif p["type"] == "images":
                         c = b.get("content")
                         n = sum(1 for x in c if isinstance(x, dict) and x.get("type") == "image") if isinstance(c, list) else 0

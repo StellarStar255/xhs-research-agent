@@ -189,6 +189,8 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .step.warn { color: #c27c0e; }
 .limits { padding: 0 16px 10px; font-size: 12px; color: var(--muted); }
 .limits.cool { color: var(--accent); }
+.weblinks { padding-left: 22px; } .weblinks li { margin: 8px 0; }
+.weblinks a { color: var(--accent); text-decoration: none; } .weblinks .u { font-size: 12px; color: var(--muted); word-break: break-all; }
 .limits .why { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--muted); }
 .limits .why:hover { color: var(--accent); border-color: var(--accent); }
 .zoom img { max-width: 100%; border-radius: 8px; }
@@ -462,6 +464,32 @@ function renderLimits(l) {
 setInterval(async () => { try { renderLimits((await api('/api/status')).limits); } catch {} }, 60000);
 
 
+const closeBtn = `<button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button>`;
+// The pictures the assistant looked at for one note.
+async function showNoteImages(sid, note) {
+  let r;
+  try { r = await api(`/api/sessions/${encodeURIComponent(sid)}/notes/${encodeURIComponent(note)}/images`); }
+  catch { return alert('找不到这些图片了'); }
+  $('#sheet').innerHTML = `${closeBtn}<h2>${esc(r.title || '笔记图片')}</h2>
+    <div class="stats"><span>👤 ${esc(r.author)}</span>${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">在小红书打开原笔记 ↗</a>` : ''}</div>
+    ${r.images.length ? `<div class="imgs">${r.images.map(u => `<img src="${esc(u)}" loading="lazy" data-zoom>`).join('')}</div>`
+      : '<p class="note">图片已经不在本地了，可以打开原笔记查看。</p>'}
+    <p class="note">这些是助手看过的图片（每篇最多 4 张），完整内容请看原笔记。</p>`;
+  $('#sheet').querySelectorAll('[data-zoom]').forEach(img => img.onclick = () => window.open(img.src, '_blank'));
+  $('#modal').classList.add('show');
+}
+// Links the web search returned (Claude); Codex doesn't report them, so search the same words.
+function showWebResults(step) {
+  const search = 'https://www.bing.com/search?q=' + encodeURIComponent(step.query);
+  if (!step.links?.length) { window.open(search, '_blank', 'noopener'); return; }
+  $('#sheet').innerHTML = `${closeBtn}<h2>网页搜索</h2>
+    <div class="stats"><span>「${esc(step.query)}」</span><a href="${esc(search)}" target="_blank" rel="noopener">在浏览器里搜索 ↗</a></div>
+    <ol class="weblinks">${step.links.map(l => `<li><a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.title || l.url)}</a>
+      <div class="u">${esc(l.url)}</div></li>`).join('')}</ol>
+    <p class="note">这些是搜索返回的网页，助手不一定每个都用了。</p>`;
+  $('#modal').classList.add('show');
+}
+
 function showLimitsWhy(l) {
   $('#sheet').innerHTML = `<div class="settings">
     <button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button>
@@ -556,7 +584,9 @@ function renderStep(p) {
   }
   if (p.type === 'web') {
     const icon = p.status === 'running' ? '<span class="spin"></span>' : p.status === 'done' ? '🌐' : '✗';
-    return `<div class="step">${icon} 网页搜索 ${p.query ? `<span class="kw">「${esc(p.query)}」</span>` : ''}</div>`;
+    const right = p.status !== 'done' || !p.query ? ''
+      : `<button class="view" data-web="${esc(p.tool_id || '')}">${p.links?.length ? `${p.links.length} 个结果 · 查看 →` : '查看 →'}</button>`;
+    return `<div class="step">${icon} 网页搜索 ${p.query ? `<span class="kw">「${esc(p.query)}」</span>` : ''}${right}</div>`;
   }
   if (p.type === 'open') {
     const icon = p.status === 'running' ? '<span class="spin"></span>' : p.status === 'done' ? '📖' : ['limited', 'login'].includes(p.status) ? '⚠' : '✗';
@@ -571,7 +601,7 @@ function renderStep(p) {
     const icon = p.status === 'running' ? '<span class="spin"></span>' : p.status === 'done' ? '🖼' : '✗';
     const what = p.title ? `「${esc(p.title)}」` : `第 ${esc(p.note)} 篇笔记`;
     const right = p.status === 'running' ? '<span class="prog">下载图片…</span>'
-      : p.status === 'done' ? `<span class="prog">${p.count} 张</span>`
+      : p.status === 'done' ? `<button class="view" data-imgs="${esc(p.session)}|${esc(p.note)}">${p.count} 张 · 查看 →</button>`
       : `<span class="prog" title="${esc(p.error || '')}">${esc((p.error || '没看成').slice(0, 30))}</span>`;
     return `<div class="step ${p.status === 'error' ? 'warn' : ''}">${icon} 查看笔记图片 <span class="kw">${what}</span>${right}</div>`;
   }
@@ -627,6 +657,11 @@ function renderThread(chat, jump) {
   });
   document.querySelectorAll('.md a').forEach(a => { a.target = '_blank'; a.rel = 'noopener'; });
   document.querySelectorAll('[data-session]').forEach(b => b.onclick = () => openNotes(b.dataset.session));
+  document.querySelectorAll('[data-imgs]').forEach(b => b.onclick = () => showNoteImages(...b.dataset.imgs.split('|')));
+  document.querySelectorAll('[data-web]').forEach(b => b.onclick = () => {
+    const step = chat.messages.flatMap(m => m.parts || []).find(p => p.type === 'web' && p.tool_id === b.dataset.web);
+    if (step) showWebResults(step);
+  });
   document.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
     const m = lastChat.messages[+b.dataset.copy];
     const ok = await copyText(toPlain(m.parts.filter(p => p.type === 'text').map(p => p.text).join('\n\n')));
