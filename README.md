@@ -6,6 +6,10 @@
 
 > A local chat agent that researches Xiaohongshu (RED) for you: ask a question, it searches notes and comments with your own logged-in account and answers with citations. Works with Claude Code, OpenAI Codex CLI, or any OpenAI-compatible API (DeepSeek, Qwen, Kimi, GLM, OpenAI…) with your own key.
 
+![演示：输入问题 → 助手去小红书搜索、挑笔记阅读 → 带原笔记链接的回答 → 查看笔记、导出分享](docs/demo.gif)
+
+<sub>演示中的等待过程已加速；笔记封面做了模糊处理。实际回答一个问题通常需要 1～3 分钟。</sub>
+
 ## 功能
 
 - **问答式**：直接提问，比如「手冲新手第一台磨豆机买什么？预算 500」。搜什么词、要不要换个角度再搜，都由智能体自己决定。
