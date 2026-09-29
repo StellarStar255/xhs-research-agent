@@ -170,7 +170,7 @@ packaging/macos_sign_notarize.sh "dist/XHS Research Agent.app" dist/app.dmg   # 
 
 ## 注意
 
-小红书网页版改版很频繁。如果某天搜索结果为 0，多半是页面结构或接口变了，需要更新 `xhs_reader/scraper.py` 里的选择器和接口路径，欢迎提 PR。
+小红书网页版会不定期改版，改版后搜索或读取可能暂时失效。遇到问题可以在 [Issues](https://github.com/StellarStar255/xhs-research-agent/issues) 反馈。
 
 ## License
 
