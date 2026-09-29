@@ -21,6 +21,7 @@ h1 { font-size: 21px; margin: 4px 0 2px; line-height: 1.4; }
 .q img { max-width: 240px; max-height: 200px; border-radius: 12px; }
 .a { background: #fff; border: 1px solid #e5e3df; border-radius: 14px; padding: 14px 18px; }
 .steps { color: #7a7a80; font-size: 12.5px; margin-bottom: 8px; }
+.md { overflow-wrap: anywhere; }
 .md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
 .md h1, .md h2, .md h3 { font-size: 16px; margin: 16px 0 6px; }
 .md a { color: #ff2442; text-decoration: none; }
@@ -137,7 +138,9 @@ def _steps(msg):
         elif p["type"] == "images" and p.get("status") == "done":
             out.append(f"🖼 看了 {p.get('count', 0)} 张笔记图片")
         elif p["type"] == "web" and p.get("query"):
-            out.append(f"🌐 网页搜索「{p['query']}」")
+            q = p["query"]
+            out.append(f"🌐 打开网页 {re.sub(r'^https?://(www[.])?', '', q)[:60]}" if re.match(r"https?://", q)
+                       else f"🌐 网页搜索「{q}」")
     return " · ".join(out)
 
 

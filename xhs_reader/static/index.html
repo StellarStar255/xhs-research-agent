@@ -84,6 +84,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .avatar { width: 30px; height: 30px; border-radius: 8px;
           font-size: 13px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 2px; }
 .body { flex: 1; min-width: 0; }
+.md { overflow-wrap: anywhere; }  /* long bare URLs wrap instead of running off the screen */
 .md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
 .md h1, .md h2, .md h3 { font-size: 16px; margin: 18px 0 6px; }
 .md a { color: var(--accent); text-decoration: none; } .md a:hover { text-decoration: underline; }
@@ -95,9 +96,10 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .md hr { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
 .step { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); background: var(--panel);
         border: 1px solid var(--line); border-radius: 10px; padding: 7px 12px; margin: 8px 0; }
-.step .kw { color: var(--ink); font-weight: 600; }
+.step .kw { color: var(--ink); font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.step { white-space: nowrap; min-width: 0; }  /* long keywords get an ellipsis instead of squeezing the label */
 .step .prog { margin-left: auto; max-width: 45%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.step .view { margin-left: auto; border: 0; background: none; color: var(--accent); font-size: 13px; padding: 0; }
+.step .view { margin-left: auto; border: 0; background: none; color: var(--accent); font-size: 13px; padding: 0; flex-shrink: 0; }
 .step.err { color: var(--accent); }
 .spin { width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%;
         animation: spin .8s linear infinite; flex-shrink: 0; }
@@ -483,6 +485,7 @@ async function showNoteImages(sid, note) {
 }
 // Links the web search returned (Claude); Codex doesn't report them, so search the same words.
 function showWebResults(step) {
+  if (/^https?:\/\//.test(step.query || '')) { window.open(step.query, '_blank', 'noopener'); return; }
   const search = 'https://www.bing.com/search?q=' + encodeURIComponent(step.query);
   if (!step.links?.length) { window.open(search, '_blank', 'noopener'); return; }
   $('#sheet').innerHTML = `${closeBtn}<h2>网页搜索</h2>
@@ -606,9 +609,11 @@ function renderStep(p) {
   }
   if (p.type === 'web') {
     const icon = p.status === 'running' ? '<span class="spin"></span>' : p.status === 'done' ? '🌐' : '✗';
+    const page = /^https?:\/\//.test(p.query || '');  // Codex also opens pages; it reports the URL as the query
+    const shown = page ? p.query.replace(/^https?:\/\/(www\.)?/, '') : p.query;
     const right = p.status !== 'done' || !p.query ? ''
       : `<button class="view" data-web="${esc(p.tool_id || '')}">${p.links?.length ? `${p.links.length} 个结果 · 查看 →` : '查看 →'}</button>`;
-    return `<div class="step">${icon} 网页搜索 ${p.query ? `<span class="kw">「${esc(p.query)}」</span>` : ''}${right}</div>`;
+    return `<div class="step">${icon} ${page ? '打开网页' : '网页搜索'} ${p.query ? `<span class="kw" title="${esc(p.query)}">${page ? esc(shown) : `「${esc(shown)}」`}</span>` : ''}${right}</div>`;
   }
   if (p.type === 'open') {
     const icon = p.status === 'running' ? '<span class="spin"></span>' : p.status === 'done' ? '📖' : ['limited', 'login'].includes(p.status) ? '⚠' : '✗';
