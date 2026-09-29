@@ -214,7 +214,8 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .grid { overflow-y: auto; padding: 16px 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; align-content: start; grid-auto-rows: max-content; flex: 1; min-height: 0; }
 .card { background: var(--panel); border-radius: 10px; overflow: hidden; cursor: pointer; border: 1px solid var(--line); }
 .card.unread { opacity: .55; }
-.card .img { aspect-ratio: 3/4; background: var(--line) center/cover no-repeat; }
+.card .img { aspect-ratio: 3/4; background: var(--line); overflow: hidden; }
+.card .img img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .card .t { padding: 8px 10px 0; font-size: 13px; font-weight: 600; line-height: 1.45; display: -webkit-box;
            -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .card .m { padding: 4px 10px 8px; display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
@@ -871,7 +872,7 @@ function renderNotes() {
   else list.sort((a, b) => isOpened(b) - isOpened(a));  // notes the agent read first
   $('#grid').innerHTML = list.map(n => `
     <div class="card${isOpened(n) ? '' : ' unread'}" title="${isOpened(n) ? '' : '没有打开阅读'}" data-nid="${esc(n.id)}">
-      <div class="img" style="background-image:url('${esc(n.cover || (n.images || [])[0] || '')}')"></div>
+      <div class="img">${(n.cover || (n.images || [])[0]) ? `<img src="${esc(n.cover || n.images[0])}" loading="lazy" referrerpolicy="no-referrer" alt="">` : ''}</div>
       <div class="t">${esc(titleOf(n))}</div>
       <div class="m"><span>${esc(n.author || '')}</span><span>♥ ${num(n.liked)}</span></div>
     </div>`).join('');
@@ -889,7 +890,7 @@ function showNote(n) {
     <div class="stats"><span>👤 ${esc(n.author || '')}</span><span>${esc(n.time || '')}</span>
       <span>♥ ${num(n.liked)}</span><span>★ ${num(n.collected)}</span><span>💬 ${num(n.comment_count)}</span>
       <a href="${esc(n.url)}" target="_blank">在小红书打开 ↗</a></div>
-    ${(n.images || []).length ? `<div class="imgs">${n.images.map(u => `<img src="${esc(u)}" loading="lazy">`).join('')}</div>` : ''}
+    ${(n.images || []).length ? `<div class="imgs">${n.images.map(u => `<img src="${esc(u)}" loading="lazy" referrerpolicy="no-referrer">`).join('')}</div>` : ''}
     <div class="desc">${isOpened(n) ? esc(n.desc || '') : '<span style="opacity:.6">这篇只在搜索列表里看到，没有打开阅读。</span>'}</div>
     ${(n.comments || []).length ? '<h3>评论</h3>' + n.comments.map(c => `
       <div class="cmt"><span class="u">${esc(c.user)} · ♥${num(c.likes)}</span><br>${esc(c.content)}
