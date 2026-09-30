@@ -75,7 +75,7 @@ def read_notes(sid):
 
 def read_report(sid):
     f = path(sid) / "report.md"
-    return f.read_text() if f.exists() else None
+    return f.read_text(encoding="utf-8") if f.exists() else None
 
 
 def list_sessions():

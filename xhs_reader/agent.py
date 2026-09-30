@@ -31,7 +31,7 @@ MODEL = os.environ.get("XHS_AGENT_MODEL")  # e.g. "sonnet" for faster answers
 EXT = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif"}
 DEFAULT_IMAGE_PROMPT = "请看看这张图片，结合小红书上的信息帮我分析一下。"
 
-_TEMPLATE = (Path(__file__).parent / "agent_prompt.md").read_text()
+_TEMPLATE = (Path(__file__).parent / "agent_prompt.md").read_text(encoding="utf-8")
 
 
 WEB_TEXT = """

@@ -68,7 +68,7 @@ def _fallback(n=4, exclude=()):
 
 def _read():
     try:
-        return json.loads(CACHE.read_text())
+        return json.loads(CACHE.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
         return {}
 
@@ -155,7 +155,7 @@ def _generate(titles):
                         "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
                         "-o", str(out), prompt], cwd=paths.DATA_DIR, env=env, capture_output=True, timeout=180)
         try:
-            return _parse(out.read_text())
+            return _parse(out.read_text(encoding="utf-8"))
         finally:
             out.unlink(missing_ok=True)
     claude = settings.find_claude()
