@@ -25,9 +25,7 @@ def conf():
 
 
 def _save(**kw):
-    s = settings.load()
-    s["mobile"].update(kw)
-    settings.save(s)
+    settings.update(lambda s: s["mobile"].update(kw))
 
 
 def lan_ip():

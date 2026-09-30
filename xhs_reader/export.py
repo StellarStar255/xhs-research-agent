@@ -146,7 +146,7 @@ def _steps(msg):
 
 def build_html(cid, index=None, hide_names=False):
     """(title, html) for the chat, or for the Q&A whose answer is messages[index]."""
-    from .server import _md
+    from .rendering import render_markdown as _md
     chat = agent.load(cid)
     pairs = _pairs(chat, index)
     if not pairs:

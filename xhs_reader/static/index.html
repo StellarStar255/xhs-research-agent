@@ -336,7 +336,7 @@ let current = null, lastJson = '', pollTimer = null, running = false;
 
 async function api(path, opts = {}) {
   const r = await fetch(path, {headers: {'Content-Type': 'application/json'}, ...opts});
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  if (!r.ok) { const e = new Error((await r.json().catch(() => ({}))).detail || r.statusText); e.status = r.status; throw e; }
   return r.json();
 }
 
@@ -531,7 +531,7 @@ $('#scroll').addEventListener('scroll', () => { clearTimeout(scrollSaveTimer); s
 window.addEventListener('beforeunload', saveScroll);
 
 function newChat() {
-  current = null; lastJson = ''; running = false; clearTimeout(pollTimer); setUrl(null);
+  current = null; lastChat = null; lastJson = ''; running = false; clearTimeout(pollTimer); setUrl(null);
   $('#tbTitle').textContent = '种草调研助手';
   if (loggedIn === false) {
     $('#thread').innerHTML = `<div class="hello"><div class="login-card">
@@ -580,17 +580,30 @@ async function openChat(id, restoring = false) {
   setUrl(id);
   clearTimeout(pollTimer);
   let chat;
-  try { chat = await api('/api/chats/' + id); } catch { return newChat(); }
+  const previous = !switching && lastChat?.id === id ? lastChat : null;
+  const query = previous?.revision ? '?since=' + encodeURIComponent(previous.revision) + '&after=' + Math.max(0, previous.messages.length - 1) : '';
+  try { chat = await api('/api/chats/' + encodeURIComponent(id) + query); }
+  catch (e) {
+    if (current !== id) return;
+    if (e.status === 404) return newChat();
+    pollTimer = setTimeout(() => openChat(id), 2500);
+    return;
+  }
   if (current !== id) return;
+  if (chat.unchanged && previous) chat = {...previous, running: chat.running};
+  else if (chat.from_index !== undefined && previous) {
+    chat.messages = [...previous.messages.slice(0, chat.from_index), ...chat.messages];
+  }
   $('#tbTitle').textContent = chat.title || '种草调研助手';
   running = chat.running;
-  const json = JSON.stringify([chat.messages, chat.queued || []]);
+  const json = chat.revision || JSON.stringify([chat.messages, chat.queued || []]);
   if (json !== lastJson) {
     lastJson = json;
     const pos = restoring ? savedScroll(id) : null;
     renderThread(chat, switching && pos === null);
     if (pos !== null) $('#scroll').scrollTop = pos;
   }
+  lastChat = chat;
   updateComposer();
   if (switching) loadChats();
   // Keep polling while queued messages wait: the next turn starts right after this one ends.
@@ -648,6 +661,23 @@ function usageText(u) {
   return `<span title="缓存读取的价格约为正常输入的 1/10"> · 新输入 ${kTok(u.prompt - cached)} · 缓存 ${kTok(cached)} · 输出 ${kTok(u.completion)}</span>`;
 }
 
+const messageMarkup = new WeakMap();
+function cachedMessage(message, render) {
+  if (!messageMarkup.has(message)) messageMarkup.set(message, render());
+  return messageMarkup.get(message);
+}
+function reconcileThread(html) {
+  const thread = $('#thread'), template = document.createElement('template');
+  template.innerHTML = html;
+  const next = [...template.content.children];
+  next.forEach((node, i) => {
+    const old = thread.children[i];
+    if (!old) thread.append(node);
+    else if (!old.isEqualNode(node)) old.replaceWith(node);
+  });
+  while (thread.children.length > next.length) thread.lastElementChild.remove();
+}
+
 function renderThread(chat, jump) {
   const lastMsg = chat.messages[chat.messages.length - 1];
   // A fresh "not logged in" from the scraper is authoritative; old chats shouldn't flip the status.
@@ -656,7 +686,7 @@ function renderThread(chat, jump) {
   const sc = $('#scroll');
   const nearBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 120;
   lastChat = chat;
-  $('#thread').innerHTML = chat.messages.map((m, i) => {
+  const threadHtml = chat.messages.map((m, i) => cachedMessage(m, () => {
     if (m.role === 'user') {
       const imgs = (m.images || []).map(n => `<img src="/api/chats/${esc(chat.id)}/images/${esc(n)}" data-zoom>`).join('');
       return `<div class="msg user"><div class="col">${imgs ? `<div class="uimgs">${imgs}</div>` : ''}
@@ -673,17 +703,18 @@ function renderThread(chat, jump) {
     const acts = m.status === 'done' && (m.parts || []).some(p => p.type === 'text')
       ? `<div class="acts"><button data-copy="${i}">复制</button><button data-export="${i}">导出 / 分享</button></div>` : '';
     return `<div class="msg"><img class="avatar" src="/icon.png" alt=""><div class="body">${parts}${draft}${busy}${err}${meta}${acts}</div></div>`;
-  }).join('') + (chat.queued || []).map(q => {
+  })).join('') + (chat.queued || []).map(q => {
     const imgs = (q.images || []).map(n => `<img src="/api/chats/${esc(chat.id)}/images/${esc(n)}" data-zoom>`).join('');
     return `<div class="msg user queued"><div class="col">${imgs ? `<div class="uimgs">${imgs}</div>` : ''}
       ${q.text ? `<div class="bubble">${esc(q.text)}</div>` : ''}
       <div class="qnote">排队中 · 当前回答结束后自动发送<button data-unqueue="${esc(q.id)}">取消</button></div></div></div>`;
   }).join('');
+  reconcileThread(threadHtml);
   document.querySelectorAll('[data-unqueue]').forEach(b => b.onclick = async () => {
     try { await api(`/api/chats/${encodeURIComponent(chat.id)}/queue/${b.dataset.unqueue}`, {method: 'DELETE'}); } catch {}
     openChat(chat.id);
   });
-  document.querySelectorAll('.md a').forEach(a => { a.target = '_blank'; a.rel = 'noopener'; });
+  document.querySelectorAll('.md a').forEach(a => { a.target = '_blank'; a.rel = 'noopener noreferrer'; });
   document.querySelectorAll('[data-session]').forEach(b => b.onclick = () => openNotes(b.dataset.session));
   document.querySelectorAll('[data-imgs]').forEach(b => b.onclick = () => showNoteImages(...b.dataset.imgs.split('|')));
   document.querySelectorAll('[data-web]').forEach(b => b.onclick = () => {
@@ -749,7 +780,7 @@ function showExport(index) {
     try {
       const r = await fetch(`/api/chats/${encodeURIComponent(current)}/export`, {method: 'POST',
         headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+      if (!r.ok) { const e = new Error((await r.json().catch(() => ({}))).detail || r.statusText); e.status = r.status; throw e; }
       if (body.save) {  // the app's own window can't download: the server saved it to 下载
         const j = await r.json();
         out(`已保存到「下载」：${esc(j.name)} <a href="#" id="xReveal">在文件夹中显示</a>`, true);
@@ -1100,7 +1131,7 @@ function renderUpdate() {
     try { await api('/api/update/start', {method: 'POST'}); } catch (e) { alert(e.message); }
     loadUpdate();
   };
-  document.querySelectorAll('#sUpdate .md a').forEach(a => { a.target = '_blank'; a.rel = 'noopener'; });
+  document.querySelectorAll('#sUpdate .md a').forEach(a => { a.target = '_blank'; a.rel = 'noopener noreferrer'; });
 }
 $('#updBanner').onclick = () => openSettings();
 loadUpdate();

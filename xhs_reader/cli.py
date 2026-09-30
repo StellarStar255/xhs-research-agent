@@ -199,6 +199,7 @@ def main(argv=None):
     im.add_argument("session")
     im.add_argument("note", type=int, help="note number as shown in the digest, e.g. 3 for [3]")
     im.add_argument("-n", "--limit", type=int, default=4)
+    im.add_argument("--json", action="store_true", help="structured image result for tool runners")
     a = ap.parse_args(argv)
 
     if a.cmd == "login":
@@ -223,9 +224,12 @@ def main(argv=None):
         except images.ImageError as e:
             print(f"IMAGES_ERROR: {e}")
             sys.exit(1)
-        print(f"IMAGES {len(paths)} 「{title}」")
-        for p in paths:
-            print(f"IMAGE {p}")
+        if a.json:
+            print(json.dumps({"title": title, "paths": [str(p) for p in paths]}, ensure_ascii=False))
+        else:
+            print(f"IMAGES {len(paths)} 「{title}」")
+            for p in paths:
+                print(f"IMAGE {p}")
     elif a.cmd == "mcp":
         from .mcp_server import serve
         serve()

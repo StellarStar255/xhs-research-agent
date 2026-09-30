@@ -6,7 +6,6 @@ backend "api":    any OpenAI-compatible chat API (DeepSeek, 通义千问, Kimi, 
                   with the user's own API key.
 """
 import glob
-import json
 import os
 import re
 import shutil
@@ -14,6 +13,7 @@ import subprocess
 from pathlib import Path
 
 from .paths import DATA_DIR
+from .persistence import atomic_json, file_lock, read_json, quarantine
 
 SETTINGS_FILE = DATA_DIR / "settings.json"
 
@@ -90,9 +90,7 @@ def notice_accepted(s=None):
 
 
 def accept_notice():
-    s = load()
-    s["notice_accepted"] = NOTICE_VERSION
-    save(s)
+    update(lambda s: s.update(notice_accepted=NOTICE_VERSION))
 
 
 def find_claude():
@@ -113,8 +111,13 @@ def codex_available():
 
 def load():
     try:
-        s = json.loads(SETTINGS_FILE.read_text())
-    except (FileNotFoundError, ValueError):
+        s = read_json(SETTINGS_FILE)
+        if not isinstance(s, dict) or any(not isinstance(s.get(k, {}), dict) for k in ("api", "mobile", "api_credentials")):
+            raise ValueError("bad settings")
+    except FileNotFoundError:
+        s = {}
+    except ValueError:
+        quarantine(SETTINGS_FILE)
         s = {}
     s.setdefault("backend", "claude" if claude_available() else "codex" if codex_available() else "api")
     s.setdefault("ui", "window")  # packaged app: "window" (own window) or "browser"
@@ -142,12 +145,17 @@ def load():
 
 
 def save(s):
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    SETTINGS_FILE.write_text(json.dumps(s, ensure_ascii=False, indent=2))
-    try:
-        SETTINGS_FILE.chmod(0o600)  # holds an API key (no-op beyond read-only on Windows)
-    except OSError:
-        pass
+    with file_lock(SETTINGS_FILE.with_suffix(".lock")):
+        atomic_json(SETTINGS_FILE, s)
+
+
+def update(fn):
+    """Read-modify-write as one transaction, including concurrent phone/GUI settings."""
+    with file_lock(SETTINGS_FILE.with_suffix(".lock")):
+        s = load()
+        fn(s)
+        atomic_json(SETTINGS_FILE, s)
+        return s
 
 
 def public(s=None):
@@ -165,3 +173,14 @@ def public(s=None):
 def api_ready(s=None):
     api = (s or load())["api"]
     return bool(api.get("base_url") and api.get("model") and api.get("api_key"))
+
+
+def api_identity(api):
+    return api.get("base_url", "").rstrip("/")
+
+
+def api_key_for(api, conf=None):
+    conf = conf or load()
+    if api_identity(api) == api_identity(conf["api"]):
+        return conf["api"].get("api_key", "")
+    return conf.get("api_credentials", {}).get(api_identity(api), "")

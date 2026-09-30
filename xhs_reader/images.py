@@ -9,13 +9,14 @@ Budgets: MAX_PER_NOTE images per call, MAX_PER_TURN per research turn. The turn 
 identified by XHS_TURN_ID (set by the agent backends for the processes they start), so
 repeated CLI calls within one turn share the budget.
 """
-import json
 import os
+import re
 import time
 import urllib.request
 
 from . import store
 from .paths import DATA_DIR
+from .persistence import atomic_json, file_lock, read_json
 
 MAX_PER_NOTE = 4
 MAX_PER_TURN = 12
@@ -32,17 +33,28 @@ def _take_budget(turn_id, n):
     """Reserve up to n images for this turn; returns how many are allowed."""
     if not turn_id:
         return n
+    with file_lock(_TURN_FILE.with_suffix(".lock")):
+        return _reserve_budget(turn_id, n)
+
+
+def _reserve_budget(turn_id, n):
     try:
-        turns = json.loads(_TURN_FILE.read_text())
-    except (FileNotFoundError, ValueError):
+        turns = read_json(_TURN_FILE)
+    except FileNotFoundError:
         turns = {}
+    except ValueError as e:
+        raise ImageError("图片额度记录损坏，请先恢复 image_turns.json") from e
+    if not isinstance(turns, dict) or any(
+            not isinstance(v, dict) or not isinstance(v.get("at"), (int, float)) or
+            not isinstance(v.get("used"), int) or v["used"] < 0 for v in turns.values()):
+        raise ImageError("图片额度记录损坏，请先恢复 image_turns.json")
     now = time.time()
     turns = {k: v for k, v in turns.items() if now - v.get("at", 0) < 6 * 3600}  # forget old turns
     used = turns.get(turn_id, {}).get("used", 0)
     allowed = max(0, min(n, MAX_PER_TURN - used))
     turns[turn_id] = {"used": used + allowed, "at": now}
     _TURN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _TURN_FILE.write_text(json.dumps(turns))
+    atomic_json(_TURN_FILE, turns)
     return allowed
 
 
@@ -63,7 +75,10 @@ def note_images(session, index, limit=MAX_PER_NOTE, turn_id=None):
     allowed = _take_budget(turn_id or os.environ.get("XHS_TURN_ID"), want)
     if allowed <= 0:
         raise ImageError(f"本轮已经看了 {MAX_PER_TURN} 张图片，达到上限。请用已有信息回答。")
-    folder = store.path(session) / "images" / str(note.get("id") or index)
+    nid = str(note.get("id") or index)
+    if not re.fullmatch(r"[\w-]+", nid):
+        raise ImageError("无效的笔记 ID")
+    folder = store.path(session) / "images" / nid
     folder.mkdir(parents=True, exist_ok=True)
     paths, expired = [], 0
     for i, url in enumerate(urls[:allowed], 1):

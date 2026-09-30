@@ -332,9 +332,7 @@ def _run_window(url, port):
             show_window()
 
     def switch_mode(mode):  # from a menu: remember it, like the settings panel does
-        s = settings.load()
-        s["ui"] = mode
-        settings.save(s)
+        settings.update(lambda s: s.update(ui=mode))
         set_ui(mode)
 
     def open_settings():

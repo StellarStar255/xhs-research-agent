@@ -98,8 +98,8 @@ def refresh_later(chats):
         try:
             items = _generate([c["title"] for c in chats[:25]])
             if items:
-                CACHE.write_text(json.dumps({"at": time.time(), "chats": len(chats), "items": items},
-                                            ensure_ascii=False))
+                from .persistence import atomic_json
+                atomic_json(CACHE, {"at": time.time(), "chats": len(chats), "items": items})
         except Exception:
             pass
         finally:

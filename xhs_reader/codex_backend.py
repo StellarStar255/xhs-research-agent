@@ -40,17 +40,7 @@ def _toml(value):
     return json.dumps(value)
 
 
-class CodexRun:
-    def __init__(self, proc):
-        self.proc, self.stopping = proc, False
-
-    def alive(self):
-        return self.proc.poll() is None
-
-    def stop(self):
-        if self.alive():
-            self.stopping = True
-            procutil.kill_tree(self.proc)
+CodexRun = agent.ClaudeRun
 
 
 def _mcp_config(turn_id):
@@ -88,8 +78,7 @@ def start(chat, text, image_names, turn_id=""):
     paths.DATA_DIR.mkdir(parents=True, exist_ok=True)
     proc = procutil.popen(cmd, cwd=paths.DATA_DIR, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=True, bufsize=1)
-    threading.Thread(target=_pump, args=(chat["id"], proc), daemon=True).start()
-    return CodexRun(proc)
+    return CodexRun(proc, _pump, chat["id"])
 
 
 def codex_error(text):
@@ -155,7 +144,19 @@ def _handle(chat, msg, ev):
         msg["error"] = codex_error(err.get("message") if isinstance(err, dict) else str(ev.get("message") or err))
 
 
-def _pump(cid, proc):
+def _pump(cid, proc, run):
+    error = None
+    try:
+        error = _pump_events(cid, proc)
+    except Exception as e:
+        error = str(e)
+        procutil.kill_tree(proc)
+    finally:
+        proc.wait()
+        agent.finish(cid, stopped=run.stopping, error=error, run=run)
+
+
+def _pump_events(cid, proc):
     stderr_tail = []
 
     def drain():  # keep stderr from filling up; remember the tail for error messages
@@ -171,10 +172,8 @@ def _pump(cid, proc):
             continue
         agent.update(cid, lambda chat, msg: _handle(chat, msg, ev))
     proc.wait()
-    run = agent._runs.get(cid)
-    stopped = getattr(run, "stopping", False)
     err = None
-    if not stopped and proc.returncode:
+    if proc.returncode:
         useful = [ln for ln in stderr_tail if "codex_models_manager" not in ln]  # benign model-list noise
         err = codex_error("\n".join(useful[-5:]) or f"exit {proc.returncode}")
-    agent.finish(cid, stopped=stopped, error=err)
+    return err

@@ -5,6 +5,8 @@ opening any note (no page-view budget), then open_notes opens the few worth read
 Per-turn budgets are enforced here, not left to the prompt.
 """
 import re
+import json
+from pathlib import Path
 import subprocess
 
 from . import paths, procutil
@@ -64,21 +66,27 @@ TOOLS_TEXT = f"""你有四个工具，像人刷小红书一样「先看列表，
 class ToolRunner:
     """Runs tool calls for one research turn, keeping that turn's budgets."""
 
-    def __init__(self, turn_id="", on_proc=None):
+    def __init__(self, turn_id="", on_proc=None, cancelled=None):
         self.turn_id = turn_id
         self.on_proc = on_proc or (lambda p: None)  # lets a caller stop a running scrape
         self.searches = 0
         self.opened = 0
+        self.cancelled = cancelled or (lambda: False)
 
     def _cli(self, *args):
+        if self.cancelled():
+            return "已被用户停止。", True
         p = procutil.popen(paths.cli_command(*args), cwd=paths.DATA_DIR,
                            env=paths.child_env({"XHS_TURN_ID": self.turn_id}),
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         self.on_proc(p)
+        if self.cancelled() and p.poll() is None:
+            procutil.kill_tree(p)
         try:
             out, _ = p.communicate(timeout=900)
         except subprocess.TimeoutExpired:
             procutil.kill_tree(p)
+            p.communicate()
             return "ERROR: 读取超时", True
         finally:
             self.on_proc(None)
@@ -86,6 +94,8 @@ class ToolRunner:
 
     def call(self, name, args, question=""):
         """-> {"text": str, "is_error": bool, "images": [Path]}"""
+        if self.cancelled():
+            return self._result("已被用户停止。", True)
         name = name.rsplit("__", 1)[-1]
         if name == "search_xiaohongshu":
             keyword = str(args.get("keyword", "")).strip()
@@ -118,11 +128,21 @@ class ToolRunner:
                 return self._result("缺少 session 参数。", True)
             return self._result(*self._cli("digest", session))
         if name == "view_note_images":
-            from . import images
+            from . import images, store
             try:
-                title, found = images.note_images(str(args.get("session", "")).strip(), int(args.get("note") or 0),
-                                                  args.get("limit") or images.MAX_PER_NOTE, turn_id=self.turn_id)
-            except (images.ImageError, ValueError, TypeError) as e:
+                session = str(args.get("session", "")).strip()
+                index = int(args.get("note") or 0)
+                limit = max(1, min(int(args.get("limit") or images.MAX_PER_NOTE), images.MAX_PER_NOTE))
+                out, failed = self._cli("images", session, str(index), "-n", str(limit), "--json")
+                if failed:
+                    return self._result(out.strip(), True)
+                result = json.loads(out)
+                title = result["title"]
+                root = (store.path(session) / "images").resolve()
+                found = [Path(p) for p in result["paths"]]
+                if any(root not in p.resolve().parents or not p.is_file() for p in found):
+                    raise ValueError("无效的图片路径")
+            except (images.ImageError, ValueError, TypeError, KeyError) as e:
                 return self._result(str(e))
             return {"text": f"「{title}」的 {len(found)} 张图片：", "is_error": False, "images": found}
         return self._result(f"没有叫 {name} 的工具。", True)

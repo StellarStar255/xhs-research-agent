@@ -4,7 +4,6 @@ Data is captured from the site's own XHR responses where possible (search list,
 comments), and from window.__INITIAL_STATE__ for note details, falling back to
 the DOM. Everything is paced with random delays to stay low-volume.
 """
-import json
 import os
 import random
 import re
@@ -14,8 +13,8 @@ from urllib.parse import quote
 
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
-from . import procutil
 from .paths import DATA_DIR
+from .persistence import atomic_json, file_lock, read_json
 
 PROFILE_DIR = DATA_DIR / "profile"
 LOCK_FILE = DATA_DIR / "browser.lock"
@@ -26,7 +25,7 @@ COMMENT_API = "/api/sns/web/v2/comment/page"
 ME_API = "/api/sns/web/v2/user/me"
 
 
-# Pacing & budgets (env-overridable). Viewing too many notes in a short time
+# Fixed pacing & budgets. Viewing too many notes in a short time
 # gets the account rate-limited by the site (error 300013 "访问频繁").
 NOTE_DELAY = (6, 12)   # seconds between notes
 HOURLY_CAP = 60
@@ -54,15 +53,19 @@ def _hm(ts):
 
 def _usage():
     try:
-        stamps = json.loads(USAGE_FILE.read_text())
-    except (FileNotFoundError, ValueError):
+        stamps = read_json(USAGE_FILE)
+    except FileNotFoundError:
         stamps = []
+    except ValueError as e:
+        raise RuntimeError("阅读额度记录损坏，请先恢复 usage.json；已暂停读取") from e
+    if not isinstance(stamps, list) or any(not isinstance(t, (int, float)) for t in stamps):
+        raise RuntimeError("阅读额度记录损坏，请先恢复 usage.json；已暂停读取")
     return [t for t in stamps if t > time.time() - 86400]
 
 
 def _record_view():
     DATA_DIR.mkdir(exist_ok=True)
-    USAGE_FILE.write_text(json.dumps(_usage() + [time.time()]))
+    atomic_json(USAGE_FILE, _usage() + [time.time()])
 
 
 def limits():
@@ -73,12 +76,14 @@ def limits():
     out = {"hour_left": max(0, HOURLY_CAP - hour_used), "day_left": max(0, DAILY_CAP - len(stamps)),
            "hour_cap": HOURLY_CAP, "day_cap": DAILY_CAP, "cooldown_until": None}
     try:
-        cd = json.loads(COOLDOWN_FILE.read_text())
+        cd = read_json(COOLDOWN_FILE)
         if cd["until"] > now:
             out["cooldown_until"] = cd["until"]
             out["cooldown_reason"] = cd.get("reason")
-    except (FileNotFoundError, ValueError, KeyError):
+    except FileNotFoundError:
         pass
+    except (ValueError, KeyError, TypeError) as e:
+        raise RuntimeError("冷却记录损坏，请先恢复 cooldown.json；已暂停读取") from e
     # Each view frees its slot one hour / one day after it happened: *_next is when the
     # next slot comes back, *_full when every slot is back.
     in_hour = [t for t in stamps if t > now - 3600]
@@ -95,7 +100,7 @@ def limits():
 
 def _start_cooldown(reason):
     until = time.time() + COOLDOWN_H * 3600
-    COOLDOWN_FILE.write_text(json.dumps({"until": until, "reason": reason}, ensure_ascii=False))
+    atomic_json(COOLDOWN_FILE, {"until": until, "reason": reason})
     return until
 
 
@@ -141,11 +146,13 @@ def _pick_browser(p):
     raise NoBrowser("没有找到 Google Chrome。请先安装 Chrome（https://www.google.com/chrome/）后再试。")
 
 
-def _lock_holder_alive():
+def browser_busy():
+    """Check real lock ownership; a PID marker left by a crash is not ownership."""
     try:
-        return procutil.pid_alive(int(LOCK_FILE.read_text().split()[0]))
-    except (FileNotFoundError, ValueError, IndexError):
-        return False
+        with file_lock(DATA_DIR / "browser.guard", timeout=0):
+            return False
+    except TimeoutError:
+        return True
 
 
 @contextmanager
@@ -161,32 +168,35 @@ def browser(headless=True, wait_s=900):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if headless and settings.load().get("browser_window") == "visible":
         headless = False
-    deadline = time.time() + wait_s
-    while LOCK_FILE.exists() and _lock_holder_alive():
-        if time.time() > deadline:
-            raise RuntimeError("浏览器正被另一个任务占用，请稍后再试")
-        time.sleep(2)
-    LOCK_FILE.write_text(f"{os.getpid()} {time.time()}")
-    try:
-        with sync_playwright() as p:
-            channel, _ = _pick_browser(p)
-            ctx = p.chromium.launch_persistent_context(
-                str(PROFILE_DIR),
-                channel=channel,
-                headless=headless,
-                viewport={"width": 1280, "height": 900},
-                locale="zh-CN",
-                # Keep Chrome's sandbox on (Playwright adds --no-sandbox by default). No flags
-                # that hide automation and no user-agent override: this is a plain, visible
-                # automated Chrome using the user's own login.
-                ignore_default_args=["--no-sandbox"],
-            )
-            try:
+    with file_lock(DATA_DIR / "browser.guard", timeout=wait_s):
+        # Keep the PID marker for status/UI compatibility. Ownership is the OS lock.
+        LOCK_FILE.write_text(f"{os.getpid()} {time.time()}", encoding="utf-8")
+        try:
+            with _browser_context(headless) as ctx:
                 yield ctx
-            finally:
-                ctx.close()
-    finally:
-        LOCK_FILE.unlink(missing_ok=True)
+        finally:
+            LOCK_FILE.unlink(missing_ok=True)
+
+
+@contextmanager
+def _browser_context(headless):
+    with sync_playwright() as p:
+        channel, _ = _pick_browser(p)
+        ctx = p.chromium.launch_persistent_context(
+            str(PROFILE_DIR),
+            channel=channel,
+            headless=headless,
+            viewport={"width": 1280, "height": 900},
+            locale="zh-CN",
+            # Keep Chrome's sandbox on (Playwright adds --no-sandbox by default). No flags
+            # that hide automation and no user-agent override: this is a plain, visible
+            # automated Chrome using the user's own login.
+            ignore_default_args=["--no-sandbox"],
+        )
+        try:
+            yield ctx
+        finally:
+            ctx.close()
 
 
 def _me(page):
@@ -279,34 +289,36 @@ def _search_items(page, keyword, limit):
                 pass
 
     page.on("response", on_response)
-    # Type into the site's own search box like a person; deep-linking to the
-    # results page tends to hang. Fall back to the URL if no box is found.
-    if HOME not in page.url:
-        page.goto(HOME, wait_until="domcontentloaded")
-        page.wait_for_timeout(3000)
-    box = None
-    for sel in ("#search-input-in-feeds", "#search-input", "textarea[placeholder]", "input[placeholder*='搜索']"):
-        cands = page.locator(sel)
-        box = next((cands.nth(i) for i in range(cands.count()) if cands.nth(i).is_visible()), None)
+    try:
+        # Type into the site's own search box like a person; deep-linking to the
+        # results page tends to hang. Fall back to the URL if no box is found.
+        if HOME not in page.url:
+            page.goto(HOME, wait_until="domcontentloaded")
+            page.wait_for_timeout(3000)
+        box = None
+        for sel in ("#search-input-in-feeds", "#search-input", "textarea[placeholder]", "input[placeholder*='搜索']"):
+            cands = page.locator(sel)
+            box = next((cands.nth(i) for i in range(cands.count()) if cands.nth(i).is_visible()), None)
+            if box:
+                break
         if box:
-            break
-    if box:
-        box.focus()  # click() can be intercepted by overlapping search widgets
-        page.keyboard.type(keyword, delay=random.randint(80, 160))
-        page.wait_for_timeout(600)
-        page.keyboard.press("Enter")
-    else:
-        page.goto(f"https://www.xiaohongshu.com/search_result?keyword={quote(keyword)}&source=web_explore_feed",
-                  wait_until="commit")
-    page.wait_for_timeout(5000)
-    _check_blocked(page)
-    stale = 0
-    while len(items) < limit and stale < 4:
-        before = len(items)
-        page.mouse.wheel(0, 3000)
-        _pause(1.5, 2.5)
-        stale = stale + 1 if len(items) == before else 0
-    page.remove_listener("response", on_response)
+            box.focus()  # click() can be intercepted by overlapping search widgets
+            page.keyboard.type(keyword, delay=random.randint(80, 160))
+            page.wait_for_timeout(600)
+            page.keyboard.press("Enter")
+        else:
+            page.goto(f"https://www.xiaohongshu.com/search_result?keyword={quote(keyword)}&source=web_explore_feed",
+                      wait_until="commit")
+        page.wait_for_timeout(5000)
+        _check_blocked(page)
+        stale = 0
+        while len(items) < limit and stale < 4:
+            before = len(items)
+            page.mouse.wheel(0, 3000)
+            _pause(1.5, 2.5)
+            stale = stale + 1 if len(items) == before else 0
+    finally:
+        page.remove_listener("response", on_response)
     return items[:limit]
 
 
@@ -344,25 +356,27 @@ def _note_detail(page, item, max_comments):
                 pass
 
     page.on("response", on_response)
-    url = f"https://www.xiaohongshu.com/explore/{nid}?xsec_token={quote(token)}&xsec_source=pc_search"
-    page.goto(url, wait_until="domcontentloaded")
-    _record_view()
-    page.wait_for_timeout(random.randint(2500, 4000))
-    _check_blocked(page)
-    # Scroll through the note like a reader; this also loads comments.
-    scroller = page.locator(".note-scroller")
-    for _ in range(random.randint(1, 3)):
-        if scroller.count():
-            scroller.first.evaluate(f"el => el.scrollBy(0, {random.randint(300, 900)})")
-        page.wait_for_timeout(random.randint(700, 1600))
-    if max_comments > 20:
+    try:
+        url = f"https://www.xiaohongshu.com/explore/{nid}?xsec_token={quote(token)}&xsec_source=pc_search"
+        _record_view()
+        page.goto(url, wait_until="domcontentloaded")
+        page.wait_for_timeout(random.randint(2500, 4000))
+        _check_blocked(page)
+        # Scroll through the note like a reader; this also loads comments.
         scroller = page.locator(".note-scroller")
-        for _ in range(max_comments // 10):
-            if len(comments) >= max_comments or scroller.count() == 0:
-                break
-            scroller.first.evaluate("el => el.scrollBy(0, 2000)")
-            page.wait_for_timeout(1200)
-    page.remove_listener("response", on_response)
+        for _ in range(random.randint(1, 3)):
+            if scroller.count():
+                scroller.first.evaluate(f"el => el.scrollBy(0, {random.randint(300, 900)})")
+            page.wait_for_timeout(random.randint(700, 1600))
+        if max_comments > 20:
+            scroller = page.locator(".note-scroller")
+            for _ in range(max_comments // 10):
+                if len(comments) >= max_comments or scroller.count() == 0:
+                    break
+                scroller.first.evaluate("el => el.scrollBy(0, 2000)")
+                page.wait_for_timeout(1200)
+    finally:
+        page.remove_listener("response", on_response)
 
     note = page.evaluate(_STATE_JS, nid) or {}
     dom = page.evaluate(_DOM_JS)
@@ -379,6 +393,7 @@ def _note_detail(page, item, max_comments):
 
     return {
         "id": nid,
+        "fetched_at": time.time(),
         "url": url,
         "type": note.get("type") or card.get("type"),
         "title": title,
@@ -448,6 +463,7 @@ def search_list(keyword, limit=20, headless=True, progress=print):
     opened, so this doesn't use the page-view budget."""
     _check_cooldown()
     with browser(headless=headless) as ctx:
+        _check_cooldown()
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         ok, _ = is_logged_in(page)
         if not ok:
@@ -464,30 +480,19 @@ CACHE_DAYS = 7
 
 def cached_detail(note_id):
     """An opened copy of this note from the last CACHE_DAYS days, if any."""
-    root = DATA_DIR / "research"
-    if not root.exists():
-        return None
-    cutoff = time.time() - CACHE_DAYS * 86400
-    for f in sorted(root.glob("*/notes.json"), key=lambda f: f.stat().st_mtime, reverse=True):
-        if f.stat().st_mtime < cutoff:
-            break
-        try:
-            for n in json.loads(f.read_text()):
-                # Older sessions have no "opened" flag but do have comments when opened.
-                if n.get("id") == note_id and (n.get("opened") or ("comments" in n and "opened" not in n)):
-                    return n
-        except (ValueError, OSError):
-            continue
-    return None
+    from .note_cache import lookup_many
+    return lookup_many([note_id], CACHE_DAYS).get(note_id)
 
 
 def open_notes(cards, max_comments=20, headless=True, progress=print):
     """Phase 2: open the chosen notes (body + comments). Each note not in the recent cache
     costs one page view against the hourly/daily budget. Returns the opened notes."""
-    lim = _check_cooldown()
+    _check_cooldown()
+    from .note_cache import lookup_many
+    hits = lookup_many([c["id"] for c in cards], CACHE_DAYS)
     opened, todo = [], []
     for c in cards:
-        hit = cached_detail(c["id"])
+        hit = hits.get(c["id"])
         if hit:
             opened.append({**hit, "opened": True, "from_cache": True})
         else:
@@ -496,6 +501,12 @@ def open_notes(cards, max_comments=20, headless=True, progress=print):
         progress(f"{len(opened)} 篇最近打开过，直接用缓存")
     if not todo:
         return opened
+    with browser(headless=headless) as ctx:
+        lim = _check_cooldown()
+        return _open_in_browser(ctx, todo, opened, max_comments, progress, lim)
+
+
+def _open_in_browser(ctx, todo, opened, max_comments, progress, lim):
     budget = min(lim["hour_left"], lim["day_left"])
     if budget <= 0:
         resets = lim.get("day_resets") if not lim["day_left"] else lim.get("hour_resets")
@@ -505,7 +516,7 @@ def open_notes(cards, max_comments=20, headless=True, progress=print):
     if budget < len(todo):
         progress(f"额度只剩 {budget} 篇，本次只打开 {budget} 篇")
         todo = todo[:budget]
-    with browser(headless=headless) as ctx:
+    if todo:
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         ok, _ = is_logged_in(page)
         if not ok:
@@ -519,6 +530,9 @@ def open_notes(cards, max_comments=20, headless=True, progress=print):
             elif i > 1:
                 _pause(*NOTE_DELAY)
             progress(f"[{i}/{len(todo)}] {c.get('title') or c['id']}")
+            current = _check_cooldown()
+            if min(current["hour_left"], current["day_left"]) <= 0:
+                raise Limited("已达到本应用主动设定的阅读上限，请稍后再试。", opened)
             try:
                 opened.append({**_note_detail(page, _as_item(c), max_comments), "opened": True})
             except Limited as e:

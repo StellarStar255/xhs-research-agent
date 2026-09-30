@@ -59,6 +59,8 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install dependencies
         run: pip install -r requirements.txt -r packaging/requirements-build.txt
+      - name: Regression tests
+        run: python -m unittest discover -s tests -v
       - name: Third-party licenses
         run: python packaging/gen_licenses.py
       - name: Build app
@@ -113,6 +115,8 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install dependencies
         run: pip install -r requirements.txt -r packaging/requirements-build.txt
+      - name: Regression tests
+        run: python -m unittest discover -s tests -v
       - name: Third-party licenses
         run: python packaging/gen_licenses.py
       - name: Build app
@@ -194,4 +198,8 @@ jobs:
             echo
             echo "首次使用请阅读 [README](https://github.com/${GITHUB_REPOSITORY}#readme) 里的免责声明。本项目与小红书没有任何关联。"
           } > notes.md
+          if [ -f "docs/releases/$GITHUB_REF_NAME.md" ]; then
+            printf '\n' >> notes.md
+            cat "docs/releases/$GITHUB_REF_NAME.md" >> notes.md
+          fi
           gh release create "$GITHUB_REF_NAME" artifacts/* --title "$GITHUB_REF_NAME" --notes-file notes.md

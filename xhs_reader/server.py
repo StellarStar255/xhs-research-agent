@@ -5,12 +5,12 @@ import threading
 import time
 from pathlib import Path
 
-import markdown
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from . import agent, paths, procutil, remote, scraper, settings, store, updater
+from .rendering import render_markdown as _md
 app = FastAPI()
 
 # What a phone (remote client, see remote.py) may not do: these stay on the computer.
@@ -114,7 +114,7 @@ class Image(BaseModel):
 
 
 class ChatReq(BaseModel):
-    message: str = ""
+    message: str = ""  # bounded below before storing or sending to a model
     chat_id: str | None = None
     images: list[Image] = []
 
@@ -132,33 +132,25 @@ class SettingsReq(BaseModel):
     claude_model: str = ""
 
 
-def _merged(req: SettingsReq):
-    s = settings.load()
+def _merged(req: SettingsReq, s=None):
+    s = settings.load() if s is None else s
     if req.backend not in ("claude", "codex", "api"):
         raise HTTPException(400, "未知的后端")
     s["backend"] = req.backend
     if req.claude_model not in settings.CLAUDE_MODELS:
         raise HTTPException(400, "未知的 Claude 模型")
     s["claude_model"] = req.claude_model
-    key = req.api.api_key.strip() or s["api"].get("api_key", "")
+    old = s["api"]
+    credentials = s.setdefault("api_credentials", {})
+    if old.get("api_key"):
+        credentials[settings.api_identity(old)] = old["api_key"]
+    endpoint = req.api.base_url.strip().rstrip("/")
+    key = req.api.api_key.strip() or credentials.get(endpoint, "")
     s["api"] = {"provider": req.api.provider, "base_url": req.api.base_url.strip().rstrip("/"),
                 "model": req.api.model.strip(), "api_key": key}
+    if key:
+        credentials[endpoint] = key
     return s
-
-
-_LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
-
-
-def _md(text):
-    # Models often start a list right after a line of text; Python-Markdown needs a
-    # blank line there, otherwise the items run together into one paragraph.
-    lines, out = text.split("\n"), []
-    for line in lines:
-        if _LIST_ITEM.match(line) and out and out[-1].strip() and not _LIST_ITEM.match(out[-1]) \
-                and not out[-1].startswith(("  ", "\t", "|")):
-            out.append("")
-        out.append(line)
-    return markdown.markdown("\n".join(out), extensions=["tables", "fenced_code", "sane_lists"])
 
 
 @app.get("/")
@@ -202,6 +194,8 @@ def send(req: ChatReq):
     _require_notice()
     if not req.message.strip() and not req.images:
         raise HTTPException(400, "问题不能为空")
+    if len(req.message) > 20000:
+        raise HTTPException(400, "问题太长（最多 20000 字）")
     if len(req.images) > 6:
         raise HTTPException(400, "一次最多 6 张图片")
     for img in req.images:
@@ -228,24 +222,35 @@ def _running_progress():
 
 
 @app.get("/api/chats/{cid}")
-def chat(cid: str):
+def chat(cid: str, since: str = "", after: int = 0):
     try:
+        # Sample before reading: a later atomic replacement must trigger another poll.
+        st = agent._path(cid).stat()
         c = agent.load(cid)
     except (FileNotFoundError, ValueError):
         raise HTTPException(404)
-    progress = None
+    active = [p for msg in c["messages"] if msg["role"] == "assistant"
+              for p in msg.get("parts", []) if p.get("type") in ("search", "open") and p.get("status") == "running"]
+    progress = _running_progress() if active else None
+    c["running"] = agent.is_running(cid)
+    c["revision"] = f"{st.st_mtime_ns}-{st.st_size}-{int(c['running'])}-{progress}"
+    if since == c["revision"]:
+        return {"unchanged": True, "revision": c["revision"], "running": c["running"]}
+    c.pop("llm_history", None)
+    c.pop("model_config", None)
+    if since and 0 <= after < len(c["messages"]):
+        c["messages"] = c["messages"][after:]
+        c["from_index"] = after
     for msg in c["messages"]:
         if msg["role"] != "assistant":
             continue
-        for p in msg["parts"]:
+        for p in msg.get("parts", []):
             if p["type"] == "text":
                 p["html"] = _md(p["text"])
-            elif p["type"] in ("search", "open") and p["status"] == "running":
-                progress = progress or _running_progress()
+            elif p in active:
                 p["progress"] = progress
         if msg.get("draft"):
             msg["draft_html"] = _md(msg["draft"])
-    c["running"] = agent.is_running(cid)
     return c
 
 
@@ -356,7 +361,12 @@ def stop(cid: str):
 
 @app.delete("/api/chats/{cid}")
 def delete(cid: str):
-    agent.delete(cid)
+    try:
+        agent.delete(cid)
+    except ValueError:
+        raise HTTPException(404)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
     return {"ok": True}
 
 
@@ -415,10 +425,11 @@ def get_settings():
 
 @app.post("/api/settings")
 def save_settings(req: SettingsReq):
-    s = _merged(req)
-    if s["backend"] == "api" and not settings.api_ready(s):
-        raise HTTPException(400, "使用大模型 API 需要填写接口地址、模型名和 API Key")
-    settings.save(s)
+    def merge(s):
+        _merged(req, s)
+        if s["backend"] == "api" and not settings.api_ready(s):
+            raise HTTPException(400, "使用大模型 API 需要填写接口地址、模型名和 API Key")
+    s = settings.update(merge)
     return settings.public(s)
 
 
@@ -457,7 +468,7 @@ def _login_status(refresh):
     if not settings.notice_accepted():
         return {"logged_in": None, "needs_notice": True}
     # Checking login launches a browser, so cache it; skip while scraping or cooling down.
-    if scraper.LOCK_FILE.exists() or scraper.limits()["cooldown_until"]:
+    if scraper.browser_busy() or scraper.limits()["cooldown_until"]:
         return _status["value"] or {"busy": True}
     if refresh or not _status["value"] or time.time() - _status["at"] > 600:
         try:
@@ -551,9 +562,7 @@ def get_browser_window():
 def post_browser_window(req: BrowserWindowReq):
     if req.mode not in ("background", "visible"):
         raise HTTPException(400, "未知的浏览器窗口设置")
-    s = settings.load()
-    s["browser_window"] = req.mode
-    settings.save(s)
+    settings.update(lambda s: s.update(browser_window=req.mode))
     return get_browser_window()
 
 
@@ -563,9 +572,7 @@ class WebSearchReq(BaseModel):
 
 @app.post("/api/web-search")
 def post_web_search(req: WebSearchReq):
-    s = settings.load()
-    s["web_search"] = req.enabled
-    settings.save(s)
+    settings.update(lambda s: s.update(web_search=req.enabled))
     return {"enabled": s["web_search"]}
 
 
@@ -578,9 +585,7 @@ def get_ui():
 def post_ui(req: UiReq):
     if req.mode not in ("window", "browser"):
         raise HTTPException(400, "未知的打开方式")
-    s = settings.load()
-    s["ui"] = req.mode
-    settings.save(s)
+    settings.update(lambda s: s.update(ui=req.mode))
     if set_ui:
         set_ui(req.mode)
     return get_ui()

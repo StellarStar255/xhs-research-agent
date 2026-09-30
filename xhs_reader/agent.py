@@ -24,6 +24,7 @@ from pathlib import Path
 
 from . import paths, procutil, settings
 from .paths import DATA_DIR
+from .persistence import atomic_json, read_json, quarantine
 
 CHATS_DIR = DATA_DIR / "chats"
 MODEL = os.environ.get("XHS_AGENT_MODEL")  # e.g. "sonnet" for faster answers
@@ -50,20 +51,27 @@ def system_prompt(tools_text, web=False):
 
 _lock = threading.RLock()
 _runs = {}  # chat id -> running turn (ClaudeRun or llm.ApiRun)
+_deleting = set()
 
 
 class ClaudeRun:
-    def __init__(self, proc):
+    def __init__(self, proc, target, cid):
         self.proc = proc
         self.stopping = False
+        self.done = threading.Event()
+        self.thread = threading.Thread(target=target, args=(cid, proc, self), daemon=True)
+
+    def start(self):
+        self.thread.start()
 
     def alive(self):
-        return self.proc.poll() is None
+        return not self.done.is_set()
 
     def stop(self):
         if self.alive():
             self.stopping = True
-            procutil.kill_tree(self.proc)
+            if self.proc.poll() is None:
+                procutil.kill_tree(self.proc)
 
 
 # ---------- storage ----------
@@ -79,14 +87,22 @@ def image_dir(cid):
 
 
 def load(cid):
-    return json.loads(_path(cid).read_text())
+    chat = read_json(_path(cid))
+    if not isinstance(chat, dict) or chat.get("id") != cid or not isinstance(chat.get("messages"), list):
+        raise ValueError("bad chat record")
+    for message in chat["messages"]:
+        if not isinstance(message, dict) or message.get("role") not in ("user", "assistant"):
+            raise ValueError("bad chat message")
+        if message["role"] == "assistant" and (
+                not isinstance(message.get("parts", []), list) or
+                any(not isinstance(p, dict) or not isinstance(p.get("type"), str)
+                    for p in message.get("parts", []))):
+            raise ValueError("bad assistant parts")
+    return chat
 
 
 def _save(chat):
-    CHATS_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = _path(chat["id"]).with_suffix(".tmp")
-    tmp.write_text(json.dumps(chat, ensure_ascii=False, indent=1))
-    tmp.replace(_path(chat["id"]))
+    atomic_json(_path(chat["id"]), chat)
 
 
 def update(cid, fn):
@@ -112,17 +128,46 @@ def list_chats():
     if not CHATS_DIR.exists():
         return []
     out = []
-    for f in sorted(CHATS_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True):
-        c = json.loads(f.read_text())
+    files = []
+    for f in CHATS_DIR.glob("*.json"):
+        try:
+            files.append((f.stat().st_mtime, f))
+        except FileNotFoundError:
+            continue
+    for _, f in sorted(files, reverse=True):
+        try:
+            c = load(f.stem)
+            if "title" not in c:
+                raise ValueError("missing title")
+        except ValueError:
+            quarantine(f)
+            continue
+        except OSError:
+            continue
         out.append({"id": c["id"], "title": c["title"], "updated": c.get("updated"),
                     "backend": c.get("backend", "claude"), "running": is_running(c["id"])})
     return out
 
 
 def delete(cid):
-    stop(cid)
-    _path(cid).unlink(missing_ok=True)
-    shutil.rmtree(image_dir(cid), ignore_errors=True)
+    _path(cid)  # validate before marking the id
+    with _lock:
+        _deleting.add(cid)
+        run = _runs.get(cid)
+        if run:
+            run.stop()
+    # Never hold the chat lock while waiting for the worker's final write.
+    if run and not run.done.wait(10):
+        with _lock:
+            _deleting.discard(cid)
+        raise RuntimeError("任务还在停止，请稍后再删除")
+    with _lock:
+        try:
+            _path(cid).unlink(missing_ok=True)
+            shutil.rmtree(image_dir(cid), ignore_errors=True)
+            _runs.pop(cid, None)
+        finally:
+            _deleting.discard(cid)
 
 
 def is_running(cid):
@@ -145,6 +190,8 @@ def submit(cid, text, images=()):
     """Send a message: start a turn now, or — while this chat's turn is still running —
     queue it to be sent when that turn ends. Returns (chat id, queued)."""
     with _lock:
+        if cid in _deleting:
+            raise RuntimeError("这个对话正在删除")
         if cid and is_running(cid):
             chat = load(cid)
             queue = chat.setdefault("queued", [])
@@ -191,6 +238,8 @@ def _send_queued_later(cid):
                 break
             time.sleep(0.2)
         with _lock:
+            if cid in _deleting:
+                return
             try:
                 chat = load(cid)
             except (FileNotFoundError, ValueError):
@@ -221,6 +270,8 @@ def send(cid, text, images=(), names=None):
     from . import llm  # avoid a circular import at module load
 
     with _lock:
+        if cid in _deleting:
+            raise RuntimeError("这个对话正在删除")
         if cid:
             chat = load(cid)
             if is_running(cid):
@@ -237,6 +288,10 @@ def send(cid, text, images=(), names=None):
             title = text.strip().splitlines()[0][:30] if text.strip() else "图片分析"
             chat = {"id": cid, "title": title, "backend": conf["backend"], "claude_session": None,
                     "created": time.strftime("%Y-%m-%d %H:%M"), "messages": []}
+        if "model_config" not in chat:  # old chats pin their current configuration on first follow-up
+            conf = settings.load()
+            chat["model_config"] = {"claude_model": MODEL or conf["claude_model"],
+                                    "api": {k: v for k, v in conf["api"].items() if k != "api_key"}}
         if names is None:
             names = _save_images(cid, images, f"{len(chat['messages']):03d}")
         else:
@@ -249,14 +304,27 @@ def send(cid, text, images=(), names=None):
 
         backend = chat.get("backend", "claude")
         turn_id = uuid.uuid4().hex  # scopes per-turn budgets (searches, images) across processes
-        if backend == "api":
-            _runs[cid] = llm.start(cid, turn_id)
-        elif backend == "codex":
-            from . import codex_backend
-            _runs[cid] = codex_backend.start(chat, text, names, turn_id)
-        else:
-            _runs[cid] = _start_claude(chat, text, images, turn_id)
-    _keep_awake(True)
+        run = None
+        try:
+            if backend == "api":
+                run = llm.start(cid, turn_id)
+            elif backend == "codex":
+                from . import codex_backend
+                run = codex_backend.start(chat, text, names, turn_id)
+            else:
+                run = _start_claude(chat, text, images, turn_id)
+            _runs[cid] = run  # register before any worker can finish
+            _keep_awake(True)
+            run.start()
+        except Exception as e:
+            if run:
+                run.stop()
+                run.done.set()
+            _runs.pop(cid, None)
+            update(cid, lambda c, m: m.update(status="error", error=f"启动模型失败：{e}"))
+            if not any(is_running(c) for c in _runs):
+                _keep_awake(False)
+            raise RuntimeError(f"启动模型失败：{e}") from e
     return cid
 
 
@@ -285,9 +353,9 @@ def _model_label(chat):
     if chat.get("backend") == "codex":
         return "Codex"
     if chat.get("backend", "claude") == "claude":
-        model = MODEL or settings.load()["claude_model"]
+        model = chat.get("model_config", {}).get("claude_model", MODEL or settings.load()["claude_model"])
         return f"Claude Code{' · ' + model.capitalize() if model else ''}"
-    api = settings.load()["api"]
+    api = chat.get("model_config", {}).get("api", settings.load()["api"])
     name = next((p["name"] for p in settings.PROVIDERS if p["id"] == api.get("provider")), "")
     return f"{name.split('（')[0]} · {api.get('model')}" if name and api.get("provider") != "custom" else api.get("model", "")
 
@@ -362,7 +430,7 @@ def _start_claude(chat, text, images, turn_id=""):
            "--include-partial-messages", "--system-prompt", system_prompt(TOOLS_TEXT, web),
            "--tools", "WebSearch" if web else "", "--mcp-config", mcp_config, "--strict-mcp-config",
            "--allowedTools", "mcp__xhs", *(["WebSearch"] if web else [])]
-    model = MODEL or settings.load()["claude_model"]
+    model = chat.get("model_config", {}).get("claude_model", MODEL or settings.load()["claude_model"])
     if model:
         cmd += ["--model", model]
     if chat.get("claude_session"):
@@ -373,10 +441,13 @@ def _start_claude(chat, text, images, turn_id=""):
     env["PATH"] = os.pathsep.join([str(Path(cmd[0]).parent), env.get("PATH", "")])
     proc = procutil.popen(cmd, cwd=DATA_DIR, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, text=True, bufsize=1)
-    proc.stdin.write(json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n")
-    proc.stdin.close()
-    threading.Thread(target=_pump, args=(chat["id"], proc), daemon=True).start()
-    return ClaudeRun(proc)
+    try:
+        proc.stdin.write(json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n")
+        proc.stdin.close()
+    except Exception:
+        procutil.kill_tree(proc)
+        raise
+    return ClaudeRun(proc, _pump, chat["id"])
 
 
 # ---------- tool steps (shared by both backends) ----------
@@ -528,7 +599,7 @@ def _handle(chat, msg, ev):
                 msg["parts"].append({"type": "text", "text": ev["result"]})
 
 
-def finish(cid, stopped=False, error=None):
+def finish(cid, stopped=False, error=None, run=None):
     """Close out a turn: settle dangling steps, set final status and elapsed time."""
     def fn(chat, msg):
         msg["draft"] = ""
@@ -540,14 +611,51 @@ def finish(cid, stopped=False, error=None):
             if error:
                 msg["error"] = error
         msg["elapsed"] = round(time.time() - msg.get("started", time.time()))
-    update(cid, fn)
-    if not any(is_running(c) for c in list(_runs) if c != cid):
-        _keep_awake(False)
-    _send_queued_later(cid)
+    with _lock:
+        try:
+            update(cid, fn)
+        finally:
+            if run:
+                run.done.set()
+                if _runs.get(cid) is run:
+                    _runs.pop(cid, None)
+            if not any(is_running(c) for c in list(_runs) if c != cid):
+                _keep_awake(False)
+        if cid not in _deleting:
+            _send_queued_later(cid)
 
 
-def _pump(cid, proc):
+def _pump(cid, proc, run):
+    error = None
+    try:
+        _pump_events(cid, proc)
+    except Exception as e:
+        error = str(e)
+        procutil.kill_tree(proc)
+    finally:
+        proc.wait()
+        if not run.stopping:
+            try:
+                if _retry_without_resume(cid, run):
+                    return
+            except Exception as e:
+                error = str(e)
+        finish(cid, stopped=run.stopping, error=error, run=run)
+
+
+def _pump_events(cid, proc):
     noise = []  # non-JSON output (stderr is merged into stdout)
+    pending, flushed = [], time.monotonic()
+    def flush():
+        nonlocal flushed
+        if pending:
+            events = list(pending)
+            pending.clear()
+            def apply(chat, msg):
+                for ev in events:
+                    _handle(chat, msg, ev)
+            update(cid, apply)
+            flushed = time.monotonic()
     for line in proc.stdout:
         try:
             ev = json.loads(line)
@@ -559,18 +667,21 @@ def _pump(cid, proc):
             d = ((ev.get("event") or {}).get("delta") or {}).get("text")
             if not d:
                 continue
-        update(cid, lambda chat, msg: _handle(chat, msg, ev))
+        pending.append(ev)
+        if ev.get("type") != "stream_event" or time.monotonic() - flushed >= 0.3:
+            flush()
+    flush()
     proc.wait()
-    stopped = getattr(_runs.get(cid), "stopping", False)
-    if not stopped and _retry_without_resume(cid):
-        return
-    finish(cid, stopped=stopped, error=None if stopped else ("\n".join(noise).strip()[-500:] or f"exit {proc.returncode}"))
+    if proc.returncode:
+        raise RuntimeError("\n".join(noise).strip()[-500:] or f"exit {proc.returncode}")
 
 
-def _retry_without_resume(cid):
+def _retry_without_resume(cid, previous):
     """If resuming the Claude session failed before any output, start once more as a new
     session seeded with the conversation so far. True if a retry was started."""
     with _lock:
+        if cid in _deleting or previous.stopping:
+            return False
         chat = load(cid)
         msg = chat["messages"][-1]
         if not (chat.get("claude_session") and msg.get("error_kind") == "error_during_execution"
@@ -580,7 +691,18 @@ def _retry_without_resume(cid):
         chat["claude_session"] = None
         msg.update(status="running", error=None, error_kind=None, retried=True, draft="")
         _save(chat)
-        _runs[cid] = _start_claude(chat, user.get("text") or "", _user_images(cid, user.get("images")))
+        run = None
+        try:
+            run = _start_claude(chat, user.get("text") or "", _user_images(cid, user.get("images")))
+            _runs[cid] = run
+            run.start()
+            previous.done.set()
+        except Exception as e:
+            if run:
+                run.stop()
+                run.done.set()
+            _runs[cid] = previous
+            finish(cid, error=str(e), run=previous)
     return True
 
 
@@ -589,7 +711,13 @@ def recover():
     if not CHATS_DIR.exists():
         return
     for f in CHATS_DIR.glob("*.json"):
-        chat = json.loads(f.read_text())
+        try:
+            chat = load(f.stem)
+        except ValueError:
+            quarantine(f)
+            continue
+        except OSError:
+            continue
         msg = chat["messages"][-1] if chat["messages"] else {}
         if msg.get("status") == "running":
             msg["status"] = "error"

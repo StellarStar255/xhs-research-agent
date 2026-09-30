@@ -8,12 +8,14 @@ re-inlined as data URLs when sent.
 """
 import base64
 import json
+import queue
 from pathlib import Path
 import threading
 import time
 
 from . import agent, procutil, settings
 from .tools import TOOLS, TOOLS_TEXT, ToolRunner
+from .history import compact_history, api_messages
 
 MAX_STEPS = 10           # model calls per turn
 
@@ -23,31 +25,58 @@ class ApiRun:
         self.turn_id = turn_id
         self.pending_images = []  # paths from view_note_images, sent after the tool results
         self.stopped = False
+        self.done = threading.Event()
+        self.cancelled = threading.Event()
+        self.resource_lock = threading.Lock()
         self.proc = None
-        self.tools = ToolRunner(turn_id, on_proc=lambda p: setattr(self, "proc", p))
+        self.client = None
+        self.stream = None
+        self.tools = ToolRunner(turn_id, on_proc=self._on_proc, cancelled=lambda: self.stopped)
         self.thread = threading.Thread(target=self._main, daemon=True)
 
     def alive(self):
-        return self.thread.is_alive()
+        return not self.done.is_set()
+
+    def start(self):
+        self.thread.start()
+
+    def _on_proc(self, p):
+        with self.resource_lock:
+            self.proc = p
+            if p and self.stopped and p.poll() is None:
+                procutil.kill_tree(p)
 
     def stop(self):
         self.stopped = True
-        p = self.proc
-        if p and p.poll() is None:
-            procutil.kill_tree(p)
+        self.cancelled.set()
+        with self.resource_lock:
+            p = self.proc
+            if p and p.poll() is None:
+                procutil.kill_tree(p)
+        # Closing a socket may itself wait on a blocked read; keep the UI responsive.
+        threading.Thread(target=self._close_network, daemon=True).start()
+
+    def _close_network(self):
+        for resource in (self.stream, self.client):
+            if resource:
+                try:
+                    resource.close()
+                except Exception:
+                    pass
 
     def _main(self):
+        error = None
         try:
             run_turn(self)
-            agent.finish(self.cid, stopped=self.stopped)
         except Exception as e:  # surface API errors in the chat instead of dying silently
-            agent.finish(self.cid, stopped=self.stopped, error=None if self.stopped else explain(e))
+            error = None if self.stopped else explain(e)
+        finally:
+            agent.finish(self.cid, stopped=self.stopped, error=error, run=self)
+            threading.Thread(target=self._close_network, daemon=True).start()
 
 
 def start(cid, turn_id=""):
-    run = ApiRun(cid, turn_id)
-    run.thread.start()
-    return run
+    return ApiRun(cid, turn_id)
 
 
 def explain(e):
@@ -73,6 +102,60 @@ def client(conf=None):
     from openai import OpenAI
     api = (conf or settings.load())["api"]
     return OpenAI(base_url=api["base_url"], api_key=api["api_key"], timeout=180, max_retries=2), api["model"]
+
+
+def chat_conf(chat):
+    conf = settings.load()
+    api = dict(chat.get("model_config", {}).get("api", conf["api"]))
+    api["api_key"] = settings.api_key_for(api, conf)
+    if not api["api_key"]:
+        raise RuntimeError("这个对话使用的服务商还没有 API Key，请在设置中重新配置该服务商")
+    return {**conf, "api": api}
+
+
+def _chunks(run, cl, **kwargs):
+    """Only the producer touches the blocking SDK; cancelled turns never consume late data."""
+    output = queue.Queue(maxsize=32)
+    def put(item):
+        while not run.stopped:
+            try:
+                output.put(item, timeout=0.1)
+                return
+            except queue.Full:
+                continue
+    def produce():
+        stream = None
+        try:
+            if run.stopped:
+                return
+            stream = _create(cl, **kwargs)
+            run.stream = stream
+            if not run.stopped:
+                for chunk in stream:
+                    if run.stopped:
+                        break
+                    put(("chunk", chunk))
+        except Exception as e:
+            put(("error", e))
+        finally:
+            if stream:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            run.stream = None
+            put(("done", None))
+    threading.Thread(target=produce, daemon=True).start()
+    while not run.stopped:
+        try:
+            kind, value = output.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        if run.stopped or kind == "done":
+            break
+        if kind == "error":
+            raise value
+        yield value
 
 
 def _user_content(cid, text, images):
@@ -120,7 +203,8 @@ def run_turn(run):
     user = chat["messages"][-2]
     history = _repair(chat.get("llm_history") or [])
     history.append({"role": "user", "content": _user_content(cid, user["text"], user.get("images"))})
-    cl, model = client()
+    cl, model = client(chat_conf(chat))
+    run.client = cl
     prompt = agent.system_prompt(TOOLS_TEXT)
     usage = {"prompt": 0, "cached": 0, "completion": 0}
 
@@ -132,12 +216,12 @@ def run_turn(run):
         if run.stopped:
             break
         last = step == MAX_STEPS - 1
-        stream = _create(cl, model=model, stream=True, tools=TOOLS, tool_choice="none" if last else "auto",
-                         messages=[{"role": "system", "content": prompt}] + _inline_images(cid, history))
+        history = compact_history(history)
+        stream = _chunks(run, cl, model=model, stream=True, tools=TOOLS, tool_choice="none" if last else "auto",
+                         messages=[{"role": "system", "content": prompt}] + _inline_images(cid, api_messages(history)))
         content, calls, flushed = "", {}, 0.0
         for chunk in stream:
             if run.stopped:
-                stream.close()
                 break
             if chunk.usage:
                 usage["prompt"] += chunk.usage.prompt_tokens or 0
@@ -224,7 +308,7 @@ def _call_tool(run, tc, question):
         text = r["text"]
         agent.apply_tool_output(step, text, r["is_error"])
     agent.update(cid, lambda c, m: _replace_step(m, step))
-    return text[-60000:]
+    return text[:6000] + ("\n（工具结果过长，已截断；可用 read_previous_notes 重读。）" if len(text) > 6000 else "")
 
 
 def _replace_step(msg, step):
