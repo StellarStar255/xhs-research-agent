@@ -291,7 +291,14 @@ def send(cid, text, images=(), names=None):
         if "model_config" not in chat:  # old chats pin their current configuration on first follow-up
             conf = settings.load()
             chat["model_config"] = {"claude_model": MODEL or conf["claude_model"],
+                                    "codex_model": conf["codex_model"],
+                                    "codex_effort": conf["codex_effort"], "claude_effort": conf["claude_effort"],
                                     "api": {k: v for k, v in conf["api"].items() if k != "api_key"}}
+        # Existing Codex chats were created before model selection existed.
+        # Keep their previous CLI default rather than inheriting a new global choice.
+        chat["model_config"].setdefault("codex_model", "")
+        chat["model_config"].setdefault("codex_effort", "")
+        chat["model_config"].setdefault("claude_effort", "")
         if names is None:
             names = _save_images(cid, images, f"{len(chat['messages']):03d}")
         else:
@@ -351,10 +358,13 @@ def _keep_awake(on):
 
 def _model_label(chat):
     if chat.get("backend") == "codex":
-        return "Codex"
+        model = chat.get("model_config", {}).get("codex_model", "")
+        effort = chat.get("model_config", {}).get("codex_effort", "")
+        return "Codex" + (f" · {model}" if model else "") + (f" · {effort}" if effort else "")
     if chat.get("backend", "claude") == "claude":
         model = chat.get("model_config", {}).get("claude_model", MODEL or settings.load()["claude_model"])
-        return f"Claude Code{' · ' + model.capitalize() if model else ''}"
+        effort = chat.get("model_config", {}).get("claude_effort", "")
+        return f"Claude Code{' · ' + model if model else ''}" + (f" · {effort}" if effort else "")
     api = chat.get("model_config", {}).get("api", settings.load()["api"])
     name = next((p["name"] for p in settings.PROVIDERS if p["id"] == api.get("provider")), "")
     return f"{name.split('（')[0]} · {api.get('model')}" if name and api.get("provider") != "custom" else api.get("model", "")
@@ -433,6 +443,11 @@ def _start_claude(chat, text, images, turn_id=""):
     model = chat.get("model_config", {}).get("claude_model", MODEL or settings.load()["claude_model"])
     if model:
         cmd += ["--model", model]
+    effort = chat.get("model_config", {}).get("claude_effort", "")
+    if effort:
+        if effort not in settings.claude_efforts():
+            raise RuntimeError("本机 Claude Code 不支持所选思考强度，请更新 Claude Code 或在新对话中使用默认强度")
+        cmd += ["--effort", effort]
     if chat.get("claude_session"):
         cmd += ["--resume", chat["claude_session"]]
     env = paths.child_env({"MCP_TIMEOUT": "60000", "MCP_TOOL_TIMEOUT": "900000"})  # searches take minutes

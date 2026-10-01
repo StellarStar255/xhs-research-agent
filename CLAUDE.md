@@ -7,13 +7,18 @@ Main product: a local chat GUI (`./start.sh` → http://localhost:8766). Two ans
 chosen in the GUI settings (data/settings.json) and fixed per chat:
 - "claude": `claude -p` headless (xhs_reader/agent.py) with NO built-in tools (`--tools ""`; Read
   can't be confined to a folder) and only our MCP server (`--mcp-config`, `mcp__xhs`).
-  Model: Settings → Claude 模型 (settings claude_model: ""/sonnet/opus); XHS_AGENT_MODEL overrides.
+  Model: Settings → Claude 模型 (default, sonnet/opus/haiku, or a concrete model ID).
+  Optional claude_effort uses --effort only when the installed CLI advertises the level.
+  XHS_AGENT_MODEL overrides when a chat is created; model and effort are then pinned in model_config.
   Usage shown per answer splits new input / cached input / output (usage.cached).
 - "codex": `codex exec --json` (xhs_reader/codex_backend.py). Codex can't be limited to
   specific commands, so it gets no shell (--disable shell_tool etc., --ignore-user-config,
   read-only sandbox) and reaches the scraper only via our MCP server `xhs-cli mcp`
   (xhs_reader/mcp_server.py, tools auto-approved with default_tools_approval_mode="approve").
   Follow-ups: `codex exec resume <codex_thread>`.
+  Settings codex_model is passed as --model; codex_effort as model_reasoning_effort.
+  Both are pinned per chat. Model/effort suggestions come from the user's models_cache.json;
+  a missing cache still permits a custom model ID, with default effort.
 - "api": any OpenAI-compatible API with the user's key (xhs_reader/llm.py), function tools
   wrapping the same CLI; per-turn search/note caps are enforced in code.
 All backends share xhs_reader/agent_prompt.md ({TOOLS}/{DATE}) and xhs_reader/tools.py (TOOLS,

@@ -147,6 +147,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .settings .api { margin-top: 12px; display: grid; gap: 10px; }
 .settings .api[hidden] { display: none; }
 .settings .field { display: grid; gap: 4px; font-size: 13px; }
+.settings .field[hidden] { display: none; }
 .settings .field span { color: var(--muted); }
 .settings input, .settings select { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 8px;
                                     padding: 8px 10px; font: inherit; font-size: 14px; width: 100%; }
@@ -940,12 +941,45 @@ let conf = null;
 async function loadSettings() {
   conf = await api('/api/settings');
   const p = conf.providers.find(p => p.id === conf.api.provider);
-  $('#backendLabel').textContent = conf.backend === 'claude' ? 'Claude Code' : conf.backend === 'codex' ? 'Codex'
+  $('#backendLabel').textContent = conf.backend === 'claude' ? 'Claude Code' + (conf.claude_model ? ' · ' + conf.claude_model : '') : conf.backend === 'codex' ? 'Codex' + (conf.codex_model ? ' · ' + conf.codex_model : '')
     : (conf.api.has_key ? (p && p.id !== 'custom' ? p.name.split('（')[0] : '') + ' ' + conf.api.model : '未配置 API');
   return conf;
 }
+const EFFORT_LABELS = {none:'不思考', minimal:'最低', low:'低', medium:'中', high:'高', xhigh:'很高', max:'最高', ultra:'极高'};
+function cliModelValue(name) {
+  const selection = $('#s' + name + 'Model')?.value || '';
+  return selection === '__custom__' ? ($('#s' + name + 'Custom')?.value || '').trim() : selection;
+}
+function cliModelFields(name, value, choices, defaultLabel) {
+  const custom = !!value && !choices.some(m => m.id === value);
+  return `<div class="api" id="s${name}">
+    <label class="field"><span>${name} 模型</span><select id="s${name}Model">
+      <option value="" ${!value ? 'selected' : ''}>${esc(defaultLabel)}</option>
+      ${choices.map(m => `<option value="${esc(m.id)}" ${m.id === value ? 'selected' : ''}>${esc(m.name)} · ${esc(m.id)}</option>`).join('')}
+      <option value="__custom__" ${custom ? 'selected' : ''}>填写具体模型 ID…</option>
+    </select></label>
+    <label class="field" id="s${name}CustomField" ${custom ? '' : 'hidden'}><span>模型 ID</span>
+      <input id="s${name}Custom" value="${custom ? esc(value) : ''}" placeholder="填写你账户可用的模型 ID" maxlength="160" autocomplete="off"></label>
+    <label class="field"><span>思考强度（可选）</span><select id="s${name}Effort"><option value="">默认（使用模型默认强度）</option></select></label>
+    <div class="note" id="s${name}EffortNote"></div>
+    <div class="note">模型与思考强度保存后用于新对话，已有对话保留原设置。${name === 'Codex' ? '列表来自本机 Codex 的模型缓存；没有列出时，也可填写具体模型 ID。' : '支持 Sonnet、Opus、Haiku 别名或具体模型 ID。'}</div>
+  </div>`;
+}
+function syncEffort(name, value) {
+  const model = cliModelValue(name);
+  const known = name === 'Codex' ? (conf.codex_models || []).find(m => m.id === model) : null;
+  const options = name === 'Claude' ? (conf.claude_efforts || []) : (known?.efforts || []);
+  const select = $('#s' + name + 'Effort');
+  select.innerHTML = '<option value="">默认（使用模型默认强度）</option>' + options.map(v => `<option value="${esc(v)}">${esc(EFFORT_LABELS[v] || v)}（${esc(v)}）</option>`).join('');
+  if (value && !options.includes(value)) select.add(new Option('已保存：' + (EFFORT_LABELS[value] || value) + '（请确认模型支持）', value));
+  select.value = value || '';
+  $('#s' + name + 'EffortNote').textContent = options.length
+    ? '不需要手动选择。更高强度通常会增加等待时间和用量；具体支持情况取决于模型。'
+    : (name === 'Codex' ? '默认即可。选择列表中的具体模型后，会显示它支持的强度档位。' : '默认即可。本机 Claude Code 未提供可识别的强度档位。');
+}
 function formValue() {
-  return {backend: document.querySelector('input[name=backend]:checked').value, claude_model: $('#sClaudeModel')?.value || '',
+  return {backend: document.querySelector('input[name=backend]:checked').value, claude_model: cliModelValue('Claude'), codex_model: cliModelValue('Codex'),
+          claude_effort: $('#sClaudeEffort')?.value || '', codex_effort: $('#sCodexEffort')?.value || '',
           api: {provider: $('#sProvider').value, base_url: $('#sBase').value, model: $('#sModel').value, api_key: $('#sKey').value}};
 }
 function showProviderNote() {
@@ -958,7 +992,7 @@ async function openSettings(message) {
     $('#sheet').innerHTML = `<div class="settings">
       <button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button>
       <h2>设置</h2>
-      <p>现在用的是：<b>${esc($('#backendLabel').textContent)}</b>${conf.claude_model && conf.backend === 'claude' ? ' · ' + esc(conf.claude_model) : ''}
+      <p>现在用的是：<b>${esc($('#backendLabel').textContent)}</b>
         · 联网搜索${conf.web_search ? '已开启' : '未开启'}</p>
       <p class="note">这是手机访问模式。修改设置、登录小红书、更新和退出，请在电脑上进行。</p>
       <p class="note"><a href="#" id="sNotice">查看使用须知</a> · 本项目与小红书没有任何关联</p></div>`;
@@ -996,12 +1030,10 @@ async function openSettings(message) {
     <h3>回答问题用的大模型</h3>
     <label class="opt ${conf.claude_available ? '' : 'disabled'}"><input type="radio" name="backend" value="claude" ${conf.backend === 'claude' ? 'checked' : ''} ${conf.claude_available ? '' : 'disabled'}>
       <div>Claude Code<small>${conf.claude_available ? '使用本机已登录的 Claude Code（需要 Claude 订阅）' : '这台电脑没有安装 Claude Code'}</small></div></label>
-    <div class="api" id="sClaude"><label class="field"><span>Claude 模型</span><select id="sClaudeModel">
-      ${[['', '默认（跟随 Claude Code 的设置）'], ['sonnet', 'Sonnet：更省额度、更快，日常调研推荐'], ['opus', 'Opus：最强，额度消耗较多']].map(([v, l]) =>
-        `<option value="${v}" ${conf.claude_model === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      <div class="note">从下一个问题开始生效。读笔记、总结这类工作用 Sonnet 基本够用。</div></div>
+    ${cliModelFields('Claude', conf.claude_model, [{id:'sonnet',name:'Sonnet'},{id:'opus',name:'Opus'},{id:'haiku',name:'Haiku'}], '默认（由 Claude Code 选择）')}
     ${conf.codex_available || conf.backend === 'codex' ? `<label class="opt ${conf.codex_available ? '' : 'disabled'}"><input type="radio" name="backend" value="codex" ${conf.backend === 'codex' ? 'checked' : ''} ${conf.codex_available ? '' : 'disabled'}>
       <div>Codex（ChatGPT 账号）<small>${conf.codex_available ? '使用本机已登录的 OpenAI Codex（例如用 ChatGPT 账号登录）' : '这台电脑没有安装 Codex'}</small></div></label>` : ''}
+    ${cliModelFields('Codex', conf.codex_model || '', conf.codex_models || [], '默认（由 Codex 选择）')}
     <label class="opt"><input type="radio" name="backend" value="api" ${conf.backend === 'api' ? 'checked' : ''}>
       <div>大模型 API<small>DeepSeek、通义千问、Kimi、智谱、OpenAI 等，用你自己的 API Key，按用量付费</small></div></label>
     <div class="api" id="sApi">
@@ -1022,10 +1054,18 @@ async function openSettings(message) {
   </div>`;
   const sync = () => {
     const b = document.querySelector('input[name=backend]:checked')?.value;
-    $('#sApi').hidden = b !== 'api'; $('#sTest').hidden = b !== 'api'; $('#sClaude').hidden = b !== 'claude';
+    $('#sApi').hidden = b !== 'api'; $('#sTest').hidden = b !== 'api'; $('#sClaude').hidden = b !== 'claude'; $('#sCodex').hidden = b !== 'codex';
     document.querySelectorAll('.settings label.opt').forEach(l => { const i = l.querySelector('input[name=backend]'); if (i) l.classList.toggle('on', i.checked); });
   };
   document.querySelectorAll('input[name=backend]').forEach(r => r.onchange = sync);
+  for (const name of ['Claude', 'Codex']) {
+    syncEffort(name, conf[name.toLowerCase() + '_effort'] || '');
+    $('#s' + name + 'Model').onchange = () => {
+      $('#s' + name + 'CustomField').hidden = $('#s' + name + 'Model').value !== '__custom__';
+      syncEffort(name, '');
+    };
+    $('#s' + name + 'Custom').oninput = () => syncEffort(name, '');
+  }
   document.querySelectorAll('input[name=bwmode]').forEach(r => r.onchange = async () => {
     document.querySelectorAll('input[name=bwmode]').forEach(x => x.closest('label').classList.toggle('on', x.checked));
     try { await api('/api/browser-window', {method: 'POST', body: JSON.stringify({mode: r.value})}); out('已切换，下次读小红书时生效', true); }
@@ -1081,9 +1121,14 @@ async function openSettings(message) {
     r.ok ? out(`连接成功，模型回复：${r.reply}`, true) : out(r.error, false);
   });
   $('#sSave').onclick = busy($('#sSave'), async () => {
+    const selected = document.querySelector('input[name=backend]:checked')?.value;
+    const name = selected === 'codex' ? 'Codex' : selected === 'claude' ? 'Claude' : null;
+    if (name && $('#s' + name + 'Model').value === '__custom__' && !cliModelValue(name)) {
+      out('请填写具体模型 ID', false); $('#s' + name + 'Custom').focus(); return;
+    }
     await api('/api/settings', {method: 'POST', body: JSON.stringify(formValue())});
     await loadSettings();
-    out('已保存。切换大模型对新对话生效，Claude 模型从下一个问题起生效', true);
+    out('已保存。模型与思考强度对新对话生效，已有对话保留原设置', true);
     setTimeout(() => $('#modal').classList.remove('show'), 700);
   });
   showProviderNote(); sync();

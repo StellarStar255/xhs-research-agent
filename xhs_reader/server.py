@@ -130,6 +130,9 @@ class SettingsReq(BaseModel):
     backend: str
     api: ApiConf
     claude_model: str = ""
+    codex_model: str = ""
+    codex_effort: str = ""
+    claude_effort: str = ""
 
 
 def _merged(req: SettingsReq, s=None):
@@ -137,9 +140,19 @@ def _merged(req: SettingsReq, s=None):
     if req.backend not in ("claude", "codex", "api"):
         raise HTTPException(400, "未知的后端")
     s["backend"] = req.backend
-    if req.claude_model not in settings.CLAUDE_MODELS:
-        raise HTTPException(400, "未知的 Claude 模型")
-    s["claude_model"] = req.claude_model
+    for field, label in (("claude_model", "Claude"), ("codex_model", "Codex")):
+        value = getattr(req, field).strip()
+        if not settings.valid_model(value):
+            raise HTTPException(400, f"{label} 模型名格式不正确")
+        s[field] = value
+    for field, allowed in (("codex_effort", settings.CODEX_EFFORTS), ("claude_effort", settings.CLAUDE_EFFORTS)):
+        value = getattr(req, field)
+        if value not in allowed:
+            raise HTTPException(400, "未知的思考强度")
+        s[field] = value
+    selected = next((m for m in settings.codex_models() if m["id"] == s["codex_model"]), None)
+    if req.backend == "codex" and s["codex_effort"] and selected and s["codex_effort"] not in selected["efforts"]:
+        raise HTTPException(400, "这个 Codex 模型不支持所选思考强度，请选择默认或支持的档位")
     old = s["api"]
     credentials = s.setdefault("api_credentials", {})
     if old.get("api_key"):

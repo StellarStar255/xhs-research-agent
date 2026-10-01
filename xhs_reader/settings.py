@@ -37,7 +37,48 @@ PROVIDERS = [
 ]
 
 
-CLAUDE_MODELS = ("", "sonnet", "opus")
+CLAUDE_MODELS = ("", "sonnet", "opus", "haiku")
+CODEX_EFFORTS = ("", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+CLAUDE_EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
+_effort_options = {}
+
+
+def claude_efforts():
+    cli = find_claude()
+    if not cli:
+        return []
+    if cli not in _effort_options:
+        try:
+            help_text = subprocess.run([cli, "--help"], capture_output=True, text=True, timeout=10).stdout
+            section = help_text.split("--effort", 1)[1].split("\n  --", 1)[0]
+            _effort_options[cli] = [v for v in CLAUDE_EFFORTS if v and re.search(rf"\b{v}\b", section)]
+        except (OSError, subprocess.TimeoutExpired, IndexError):
+            _effort_options[cli] = []
+    return _effort_options[cli]
+
+
+def valid_model(value):
+    """Accept CLI aliases and concrete IDs without accepting whitespace/control text."""
+    return isinstance(value, str) and (value == "" or bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,159}", value)))
+
+
+def codex_models():
+    """Suggestions from the user's local CLI catalog; never guess account availability."""
+    cache = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "models_cache.json"
+    try:
+        models = read_json(cache).get("models", [])
+        out, seen = [], set()
+        for model in models:
+            slug = model.get("slug", "")
+            if model.get("visibility") != "list" or not slug or not valid_model(slug) or slug in seen:
+                continue
+            seen.add(slug)
+            levels = model.get("supported_reasoning_levels") or []
+            efforts = [r.get("effort") for r in levels if isinstance(r, dict) and r.get("effort") in CODEX_EFFORTS and r.get("effort")]
+            out.append({"id": slug, "name": model.get("display_name") or slug, "efforts": efforts})
+        return out
+    except (OSError, ValueError, TypeError, AttributeError):
+        return []
 
 
 # Where agent CLIs usually live, for when the app was started without them on PATH
@@ -129,12 +170,17 @@ def load():
     s.setdefault("web_search", False)
     # Claude Code model: "" = Claude Code's own default, or an alias like "sonnet" / "opus".
     s.setdefault("claude_model", "")
+    s.setdefault("codex_model", "")
+    for field, choices in (("codex_effort", CODEX_EFFORTS), ("claude_effort", CLAUDE_EFFORTS)):
+        if s.setdefault(field, "") not in choices:
+            s[field] = ""
     # Phone access over the local network (xhs_reader/remote.py); off by default.
     mobile = s.setdefault("mobile", {})
     mobile.setdefault("enabled", False)
     mobile.setdefault("token", "")
-    if s["claude_model"] not in CLAUDE_MODELS:
-        s["claude_model"] = ""
+    for field in ("claude_model", "codex_model"):
+        if not valid_model(s[field]):
+            s[field] = ""
     if s["browser_window"] == "offscreen":  # v0.1.11 name
         s["browser_window"] = "visible"
     api = s.setdefault("api", {})
@@ -166,7 +212,10 @@ def public(s=None):
     api["has_key"] = bool(key)
     api["key_hint"] = f"{key[:3]}…{key[-4:]}" if len(key) > 10 else ("已填写" if key else "")
     return {"backend": s["backend"], "ui": s["ui"], "browser_window": s["browser_window"], "web_search": s["web_search"],
-            "claude_model": s["claude_model"], "api": api, "claude_available": claude_available(),
+            "claude_model": s["claude_model"], "codex_model": s["codex_model"],
+            "claude_effort": s["claude_effort"], "codex_effort": s["codex_effort"],
+            "claude_efforts": claude_efforts(),
+            "codex_models": codex_models(), "api": api, "claude_available": claude_available(),
             "codex_available": codex_available(), "providers": PROVIDERS}
 
 

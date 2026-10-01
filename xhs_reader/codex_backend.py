@@ -66,6 +66,12 @@ def start(chat, text, image_names, turn_id=""):
         # Codex searches the web by default ("cached"); follow the user's setting instead.
         "-c", f"web_search={_toml('live' if web else 'disabled')}",
     ]
+    model = chat.get("model_config", {}).get("codex_model", "")
+    if model:
+        cmd += ["--model", model]
+    effort = chat.get("model_config", {}).get("codex_effort", "")
+    if effort:
+        cmd += ["-c", f"model_reasoning_effort={_toml(effort)}"]
     for feature in _features_to_disable(codex):
         cmd += ["--disable", feature]
     cmd += _mcp_config(turn_id)
