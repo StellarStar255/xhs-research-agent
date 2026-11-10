@@ -425,10 +425,10 @@ def note_image(sid: str, nid: str, name: str):
 
 
 @app.get("/api/suggestions")
-def suggestions(ex: list[str] = Query(default=[])):
+def suggestions(ex: list[str] = Query(default=[]), more: bool = False):
     """Welcome-screen examples; ex = the ones on screen now (for 换一批)."""
     from . import suggestions as sug
-    return sug.get(exclude=ex)
+    return sug.get(exclude=ex, more=more)
 
 
 @app.get("/api/settings")

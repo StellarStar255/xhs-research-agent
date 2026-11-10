@@ -327,12 +327,11 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num = n => n >= 10000 ? (n / 10000).toFixed(1) + '万' : (n ?? 0);
 const titleOf = n => n.title || (n.desc || '').split('\n').find(l => l.trim())?.slice(0, 40) || '(无标题)';
-const EXAMPLES = [
-  '国庆去成都带父母玩 4 天，有哪些不踩雷的餐厅和路线？',
-  '想买一台扫地机器人，现在小红书上大家最推荐哪款？有什么坑？',
-  '上海适合一个人周末去的小众展览或咖啡店',
-  '第一次养猫需要准备什么？大家都后悔买了什么？',
-];
+let examplesTimer, examplesRequest = 0, examplesSeen = [], examplesRevision = '';
+function stopExamples() {
+  clearTimeout(examplesTimer);
+  examplesRequest++;
+}
 let current = null, lastJson = '', pollTimer = null, running = false;
 
 async function api(path, opts = {}) {
@@ -532,6 +531,7 @@ $('#scroll').addEventListener('scroll', () => { clearTimeout(scrollSaveTimer); s
 window.addEventListener('beforeunload', saveScroll);
 
 function newChat() {
+  stopExamples(); examplesSeen = []; examplesRevision = '';
   current = null; lastChat = null; lastJson = ''; running = false; clearTimeout(pollTimer); setUrl(null);
   $('#tbTitle').textContent = '种草调研助手';
   if (loggedIn === false) {
@@ -551,30 +551,60 @@ function newChat() {
     <p>我会去小红书搜索、读笔记和评论区，然后给你一个靠谱的答案</p>
     <div class="examples" id="examples"></div>
     <div class="ex-foot"><span id="exNote"></span><button id="exMore">↻ 换一批</button></div></div>`;
-  renderExamples(EXAMPLES, false);
+  $('#exNote').textContent = '正在准备推荐…';
   loadExamples();
-  $('#exMore').onclick = () => loadExamples([...document.querySelectorAll('#examples button')].map(b => b.textContent));
+  $('#exMore').onclick = () => loadExamples(true);
   updateComposer(); loadChats(); $('#input').focus();
 }
 $('#newChat').onclick = newChat;
 
-// Example questions: personalised from recent chats when available (see suggestions.py).
+// Keep displayed questions stable while polling; only publish a newly generated batch.
 function renderExamples(items, personal) {
   const box = document.getElementById('examples');
   if (!box) return;
   box.innerHTML = items.map(x => `<button>${esc(x)}</button>`).join('');
   box.querySelectorAll('button').forEach(b => b.onclick = () => { $('#input').value = b.textContent; send(); });
-  $('#exNote').textContent = personal ? '根据你最近的提问推荐' : '';
+  examplesSeen = [...new Set([...items, ...examplesSeen])].slice(0, 64);
+  box.dataset.personal = personal ? 'true' : 'false';
 }
-async function loadExamples(exclude = []) {
+async function loadExamples(more = false, polling = false) {
+  clearTimeout(examplesTimer);
+  const request = ++examplesRequest;
+  const button = document.getElementById('exMore');
+  if (!button) return;
+  button.disabled = true;
+  if (more) button.textContent = '正在换一批…';
   try {
-    const q = exclude.map(x => 'ex=' + encodeURIComponent(x)).join('&');
-    const r = await api('/api/suggestions' + (q ? '?' + q : ''));
-    if (current === null) renderExamples(r.items, r.personal);
-  } catch {}
+    const q = new URLSearchParams();
+    examplesSeen.forEach(x => q.append('ex', x));
+    if (more) q.set('more', 'true');
+    const r = await api('/api/suggestions?' + q.toString());
+    if (request !== examplesRequest || current !== null || !document.getElementById('examples')) return;
+    if (!polling || r.revision !== examplesRevision || !$('#examples').children.length) {
+      renderExamples(r.items, r.personal);
+      examplesRevision = r.revision;
+    }
+    const personal = $('#examples').dataset.personal === 'true';
+    $('#exNote').textContent = r.pending
+      ? (personal ? '正在根据最新对话更新…' : '先看看这些，正在根据你的聊天生成推荐…')
+      : r.failed ? (personal ? '根据最近对话推荐 · 暂时无法更新' : '先看看这些，个性化推荐暂时不可用')
+      : personal ? '根据你最近的对话推荐' : '从一个感兴趣的问题开始，推荐会随聊天更新';
+    examplesTimer = setTimeout(() => loadExamples(false, true), r.pending ? 2000 : 30000);
+  } catch {
+    if (request === examplesRequest && document.getElementById('exNote')) {
+      $('#exNote').textContent = '推荐暂时加载失败，点“换一批”重试';
+      examplesTimer = setTimeout(() => loadExamples(false, true), 30000);
+    }
+  } finally {
+    if (request === examplesRequest && document.getElementById('exMore') === button) {
+      button.disabled = false;
+      button.textContent = '↻ 换一批';
+    }
+  }
 }
 
 async function openChat(id, restoring = false) {
+  stopExamples();
   const switching = id !== current;
   if (switching) { saveScroll(); lastJson = ''; }
   current = id;

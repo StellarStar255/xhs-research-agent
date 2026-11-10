@@ -112,6 +112,79 @@ class FrontendTests(IsolatedTest):
             finally:
                 browser.close()
 
+    def test_suggestions_publish_async_avoid_repeats_and_ignore_old_requests(self):
+        import uvicorn
+        from playwright.sync_api import sync_playwright
+        from xhs_reader import suggestions
+
+        settings.accept_notice()
+        self.stack.enter_context(patch.object(server, '_login_status', return_value={'logged_in':True}))
+        starter = ['新用户可以先问些什么问题？' + str(i) for i in range(4)]
+        personal = ['根据手冲预算推荐的后续问题？' + str(i) for i in range(12)]
+        calls = []
+        ready = False
+        def batch(exclude=(), more=False):
+            calls.append((list(exclude), more))
+            items = [q for q in (personal if ready else starter) if q not in exclude][:4]
+            return {'items':items, 'personal':ready, 'pending':not ready,
+                    'revision':'generated-1' if ready else '', 'failed':False}
+        self.stack.enter_context(patch.object(suggestions, 'get', side_effect=batch))
+        sock = socket.socket()
+        sock.bind(('127.0.0.1', 0))
+        sock.listen()
+        port = sock.getsockname()[1]
+        srv = uvicorn.Server(uvicorn.Config(server.app, log_level='error'))
+        thread = threading.Thread(target=srv.run, kwargs={'sockets':[sock]}, daemon=True)
+        thread.start()
+        def shutdown():
+            srv.should_exit = True
+            thread.join(5)
+            sock.close()
+        self.addCleanup(shutdown)
+        deadline = time.monotonic() + 5
+        while not srv.started and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertTrue(srv.started)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(channel='chrome', headless=True)
+            try:
+                page = browser.new_page()
+                errors = []
+                page.on('pageerror', lambda e: errors.append(str(e)))
+                page.goto(f'http://127.0.0.1:{port}/')
+                page.wait_for_function("document.querySelector('#examples')?.dataset.personal === 'false'")
+                self.assertIn('正在根据你的聊天生成推荐', page.locator('#exNote').inner_text())
+                # Poll completion: the user never needs to click to receive generated suggestions.
+                ready = True
+                page.evaluate('async () => { await loadExamples(false, true); clearTimeout(examplesTimer); }')
+                self.assertEqual(page.locator('#examples button').all_text_contents(), personal[:4])
+                self.assertIn('最近的对话', page.locator('#exNote').inner_text())
+                page.locator('#exMore').click()
+                page.wait_for_function("document.querySelector('#examples button')?.textContent.endsWith('4')")
+                self.assertEqual(page.locator('#examples button').all_text_contents(), personal[4:8])
+                self.assertTrue(calls[-1][1])
+                self.assertTrue(set(starter + personal[:4]).issubset(set(calls[-1][0])))
+                # An older request returning after a new welcome screen must not overwrite it.
+                page.evaluate("""() => {
+                    clearTimeout(examplesTimer);
+                    window.originalApi = api;
+                    api = (path, ...args) => path.startsWith('/api/suggestions')
+                      ? new Promise(resolve => window.finishOldExamples = resolve)
+                      : originalApi(path, ...args);
+                    void loadExamples();
+                }""")
+                page.wait_for_function("typeof window.finishOldExamples === 'function'")
+                page.evaluate('api = window.originalApi; newChat()')
+                page.wait_for_function("document.querySelector('#examples')?.dataset.personal === 'true'")
+                page.evaluate("window.finishOldExamples({items:['过期请求不能覆盖新页面'], personal:false, pending:false, revision:'old'})")
+                page.wait_for_timeout(50)
+                self.assertNotIn('过期请求', page.locator('#examples').inner_text())
+                page.set_viewport_size({'width':390, 'height':844})
+                self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'), 390)
+                self.assertFalse(errors, errors)
+            finally:
+                browser.close()
+
 
 if __name__ == '__main__':
     unittest.main()
