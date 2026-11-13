@@ -66,6 +66,10 @@ aside { width: var(--sidebar-width, 260px); position: relative; flex-shrink: 0; 
 .chat-item { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; }
 .chat-item:hover { background: var(--panel); }
 .chat-item.active { background: var(--accent-soft); }
+.chat-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.chat-item:focus-within .x { visibility: visible; }
+#chatListStatus { margin: 0 12px 6px; color: var(--muted); font-size: 12px; }
+#chatListStatus[hidden] { display: none; }
 .chat-item .t { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-summary { flex: 1; min-width: 0; }
 .chat-summary .t { display: block; }
@@ -330,7 +334,8 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
       <button id="resetFilters" class="gear">重置筛选</button>
     </details>
   </div>
-  <div class="chats" id="chats"></div>
+  <div id="chatListStatus" role="status" hidden><span id="chatListError"></span> <button id="chatListRetry" class="gear">重试</button></div>
+  <div class="chats" id="chats" aria-label="历史对话列表"></div>
   <div class="login"><span class="dot" id="dot"></span><span id="loginText">检查登录中…</span>
     <button id="loginBtn" data-login hidden>扫码登录</button></div>
   <div class="limits" id="limits"></div>
@@ -388,17 +393,42 @@ function stopExamples() {
   clearTimeout(examplesTimer);
   examplesRequest++;
 }
-let current = null, lastJson = '', pollTimer = null, running = false;
+let current = null, lastJson = '', pollTimer = null, running = false, chatRequest = 0;
 
 async function api(path, opts = {}) {
   const r = await fetch(path, {headers: {'Content-Type': 'application/json'}, ...opts});
   if (!r.ok) { const e = new Error((await r.json().catch(() => ({}))).detail || r.statusText); e.status = r.status; throw e; }
-  return r.json();
+  const result = await r.json();
+  if (opts.method && opts.method !== 'GET' && /^\/api\/(chats|trash)(\/|$)/.test(path)) broadcastHistoryChange();
+  return result;
 }
+
+let historyChannel = null, syncTimer, syncBusy = false;
+try { historyChannel = new BroadcastChannel('xhs-history'); historyChannel.onmessage = () => scheduleHistorySync(); } catch {}
+function broadcastHistoryChange() {
+  if (historyChannel) historyChannel.postMessage('changed');
+  else try { localStorage.setItem('xhs-history-change', String(Date.now()) + Math.random()); } catch {}
+}
+function scheduleHistorySync() {
+  clearTimeout(syncTimer); syncTimer = setTimeout(syncHistory, 150);
+}
+async function syncHistory() {
+  if (document.hidden || renaming || searchComposing || syncBusy) return;
+  syncBusy = true;
+  try {
+    if (current) await openChat(current); else await loadChats();
+    if ($('#trashList')) await loadTrash();
+  } finally { syncBusy = false; }
+}
+window.addEventListener('storage', e => { if (e.key === 'xhs-history-change') scheduleHistorySync(); });
+window.addEventListener('focus', scheduleHistorySync);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleHistorySync(); });
+setInterval(syncHistory, 10000);  // also covers another browser or a phone
 
 /* ---------- sidebar ---------- */
 let renaming = false;  // don't redraw the list while a name is being edited
 let chatSearchTimer, chatListRequest = 0, searchComposing = false;
+let chatListSignature = '', chatListLoaded = false;
 const searchWords = query => [...new Set(query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean))];
 function highlighted(text, query) {
   const words = searchWords(query).sort((a, b) => b.length - a.length);
@@ -412,7 +442,7 @@ function highlighted(text, query) {
   return out + esc(text.slice(start));
 }
 async function loadChats() {
-  if (searchComposing) return;
+  if (searchComposing) return false;
   const request = ++chatListRequest;
   const query = $('#chatSearch').value.trim();
   const params = new URLSearchParams({q: query, scope: $('#chatScope').value, view: $('#chatView').value,
@@ -420,19 +450,37 @@ async function loadChats() {
   let list;
   try { list = await api('/api/chats?' + params); }
   catch (e) {
-    if (request === chatListRequest && !renaming) $('#chats').innerHTML = `<div class="chat-search-state" role="status">${esc(e.message || '加载失败，请重试')}</div>`;
-    return;
+    if (request === chatListRequest && !renaming) {
+      $('#chatListError').textContent = (e.message || '加载失败') + (chatListLoaded ? ' · 保留上次结果' : '');
+      $('#chatListStatus').hidden = false;
+    }
+    return false;
   }
-  if (renaming || request !== chatListRequest || query !== $('#chatSearch').value.trim()) return;
+  if (renaming || request !== chatListRequest || query !== $('#chatSearch').value.trim()) return false;
+  chatListLoaded = true; $('#chatListStatus').hidden = true;
+  const signature = JSON.stringify([list, params.toString(), current]);
+  if (signature === chatListSignature) return true;
+  chatListSignature = signature;
+  const focused = document.activeElement.closest('#chats .chat-item');
+  const focusedId = focused?.dataset.id;
+  const focusedAction = document.activeElement.dataset.organize ? 'organize' : document.activeElement.dataset.ren ? 'ren' : document.activeElement.dataset.del ? 'del' : '';
+  const scrollTop = $('#chats').scrollTop;
   $('#chats').innerHTML = list.map(c => `
-    <div class="chat-item ${c.id === current ? 'active' : ''} ${c.pinned ? 'pinned' : ''}" data-id="${esc(c.id)}">
+    <div class="chat-item ${c.id === current ? 'active' : ''} ${c.pinned ? 'pinned' : ''}" data-id="${esc(c.id)}" tabindex="0" aria-label="${esc(c.title)}" ${c.id === current ? 'aria-current="true"' : ''}>
       ${c.running ? '<span class="spin"></span>' : ''}<div class="chat-summary"><span class="t" title="${esc(c.title)}">${highlighted(c.title, query)}</span>
       ${c.snippet ? `<div class="chat-snippet">${highlighted(c.snippet, query)}</div>` : ''}</div>
       <button class="x" data-organize="${esc(c.id)}" data-pinned="${c.pinned}" data-archived="${c.archived}" title="置顶和归档">⋯</button>
       <button class="x" data-ren="${esc(c.id)}" title="重命名">✎</button>
       <button class="x" data-del="${esc(c.id)}" title="删除">×</button>
     </div>`).join('') || `<div class="chat-search-state" role="status">${query ? '没有找到同时包含这些关键词的对话' : '当前范围暂无对话'}</div>`;
+  if (focusedId) {
+    const item = [...$('#chats').querySelectorAll('.chat-item')].find(node => node.dataset.id === focusedId);
+    (focusedAction ? item?.querySelector(`[data-${focusedAction}]`) : item)?.focus({preventScroll: true});
+  }
+  $('#chats').scrollTop = scrollTop;
+  return true;
 }
+$('#chatListRetry').onclick = () => loadChats();
 for (const id of ['chatView', 'chatScope', 'chatSince', 'chatUntil']) $('#' + id).onchange = () => {
   clearTimeout(chatSearchTimer); clearSearchNavigation(); loadChats();
 };
@@ -454,8 +502,30 @@ $('#chatSearch').addEventListener('keydown', e => {
     e.preventDefault(); $('#chatSearch').value = '';
     clearSearchNavigation();
     clearTimeout(chatSearchTimer); loadChats();
-  } else if (e.key === 'Enter' && !e.isComposing) {
-    clearTimeout(chatSearchTimer); loadChats();
+  } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter') {
+    e.preventDefault(); clearTimeout(chatSearchTimer);
+    loadChats().then(loaded => {
+      if (!loaded || document.activeElement !== $('#chatSearch')) return;
+      const items = $('#chats').querySelectorAll('.chat-item');
+      const item = e.key === 'ArrowUp' ? items[items.length - 1] : items[0];
+      if (e.key === 'Enter') item?.click(); else item?.focus();
+    });
+  }
+});
+$('#chats').addEventListener('keydown', e => {
+  if (e.isComposing || e.target.closest('input, button')) return;
+  const item = e.target.closest('.chat-item'); if (!item) return;
+  if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
+    e.preventDefault(); const items = [...$('#chats').querySelectorAll('.chat-item')];
+    const index = items.indexOf(item), delta = e.key === 'ArrowDown' ? 1 : -1;
+    items[e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : (index + delta + items.length) % items.length]?.focus();
+  } else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); item.click(); }
+  else if (e.key === 'Escape') { e.preventDefault(); $('#chatSearch').focus(); }
+});
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k' && !e.isComposing) {
+    e.preventDefault(); if (matchMedia('(max-width: 760px)').matches) document.body.classList.add('side-open');
+    $('#chatSearch').focus(); $('#chatSearch').select();
   }
 });
 function startRename(item) {
@@ -474,6 +544,7 @@ function startRename(item) {
     done = true;
     const title = input.value.trim();
     renaming = false;
+    chatListSignature = '';  // the temporary rename input must be replaced even on cancel
     if (save && title && title !== old) {
       try {
         await api(`/api/chats/${encodeURIComponent(item.dataset.id)}/rename`, {method: 'POST', body: JSON.stringify({title})});
@@ -541,11 +612,11 @@ function showOrganize(button) {
 async function showHistoryManagement() {
   $('#sheet').innerHTML = `<div class="settings"><button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button><h2>历史记录管理</h2>
     ${REMOTE ? '' : `<h3>备份与恢复</h3><p class="note">备份聊天、图片、回收站和已保存的笔记。导入会跳过已有记录，不覆盖当前数据。请先等待回答结束。</p>
-    <div class="history-actions"><button class="btn" id="backupExport">备份到 ZIP</button><button class="btn" id="backupImport">导入备份</button><input type="file" id="backupFile" accept=".zip,application/zip" hidden></div><p id="backupResult" class="note" role="status"></p>`}
+    <div class="history-actions"><button class="btn" id="backupExport">备份到 ZIP</button><button class="btn" id="backupImport">导入备份</button><input type="file" id="backupFile" accept=".zip,application/zip" hidden></div><div id="backupPreview" hidden></div><p id="backupResult" class="note" role="status"></p>`}
     <h3>回收站</h3><p class="note">删除的对话会保留在这里，恢复后不会自动发送排队消息。</p><div id="trashList">正在加载…</div></div>`;
   $('#modal').classList.add('show');
   if (!REMOTE) {
-    const result = $('#backupResult'), exportButton = $('#backupExport'), importButton = $('#backupImport'), fileInput = $('#backupFile');
+    const result = $('#backupResult'), exportButton = $('#backupExport'), importButton = $('#backupImport'), fileInput = $('#backupFile'), previewBox = $('#backupPreview');
     const busy = value => { exportButton.disabled = importButton.disabled = value; };
     exportButton.onclick = async () => {
       busy(true); result.textContent = '正在生成备份…';
@@ -570,13 +641,29 @@ async function showHistoryManagement() {
     fileInput.onchange = async () => {
       const file = fileInput.files[0]; if (!file) return;
       if (file.size > 256 * 1024 * 1024) { result.textContent = '备份文件不能超过 256 MB'; fileInput.value = ''; return; }
-      busy(true); result.textContent = '正在校验并导入…';
+      busy(true); previewBox.hidden = true; result.textContent = '正在校验备份并生成预览…';
       try {
-        const r = await fetch('/api/backup/import', {method: 'POST', headers: {'Content-Type': 'application/zip'}, body: file});
+        const r = await fetch('/api/backup/import?preview=true', {method: 'POST', headers: {'Content-Type': 'application/zip'}, body: file});
         const info = await r.json(); if (!r.ok) throw new Error(info.detail);
-        result.textContent = `已导入 ${info.imported} 个对话、${info.trash} 个回收站记录和 ${info.research} 组笔记，跳过 ${info.skipped} 个已有对话`;
-        $('#historyToast').hidden = true;
-        loadChats(); loadTrash();
+        result.textContent = '校验通过，请确认导入。';
+        previewBox.innerHTML = `<h3>导入预览</h3><p class="note">${esc(file.name)}：共 ${info.conversations} 个对话记录、${info.attachments} 个图片附件，解压后约 ${(info.expanded_bytes / 1024 / 1024).toFixed(1)} MB。</p>
+          <p>预计新增 ${info.imported} 个对话、${info.trash} 个回收站记录和 ${info.research} 组笔记，跳过 ${info.skipped} 个已有对话。</p>
+          ${info.duplicates.length ? `<p class="note">重复记录（最多显示 10 个）：${info.duplicates.map(esc).join('、')}</p>` : ''}
+          <div class="history-actions"><button class="btn primary" id="backupConfirm">确认导入</button><button class="btn" id="backupCancel">取消</button></div>`;
+        previewBox.hidden = false;
+        previewBox.querySelector('#backupCancel').onclick = () => { previewBox.hidden = true; previewBox.innerHTML = ''; result.textContent = '已取消导入'; };
+        previewBox.querySelector('#backupConfirm').onclick = async () => {
+          busy(true); previewBox.querySelectorAll('button').forEach(b => b.disabled = true); result.textContent = '正在导入…';
+          try {
+            const response = await fetch('/api/backup/import', {method: 'POST', headers: {'Content-Type': 'application/zip'}, body: file});
+            const imported = await response.json(); if (!response.ok) throw new Error(imported.detail);
+            previewBox.hidden = true; previewBox.innerHTML = '';
+            result.textContent = `已导入 ${imported.imported} 个对话、${imported.trash} 个回收站记录和 ${imported.research} 组笔记，跳过 ${imported.skipped} 个已有对话`;
+            $('#historyToast').hidden = true;
+            broadcastHistoryChange(); loadChats(); loadTrash();
+          } catch (e) { result.textContent = e.message; previewBox.querySelectorAll('button').forEach(b => b.disabled = false); }
+          busy(false);
+        };
       } catch (e) { result.textContent = e.message; }
       fileInput.value = ''; busy(false);
     };
@@ -804,6 +891,8 @@ $('#scroll').addEventListener('scroll', () => { clearTimeout(scrollSaveTimer); s
 window.addEventListener('beforeunload', saveScroll);
 
 function newChat() {
+  chatRequest++;
+  threadMarkup = []; threadNodes = [];
   clearSearchNavigation();
   stopExamples(); examplesSeen = []; examplesRevision = '';
   current = null; lastChat = null; lastJson = ''; running = false; clearTimeout(pollTimer); setUrl(null);
@@ -879,6 +968,7 @@ async function loadExamples(more = false, polling = false) {
 }
 
 async function openChat(id, restoring = false) {
+  const request = ++chatRequest;
   stopExamples();
   const switching = id !== current;
   if (switching) { clearSearchNavigation(); saveScroll(); lastJson = ''; }
@@ -890,12 +980,12 @@ async function openChat(id, restoring = false) {
   const query = previous?.revision ? '?since=' + encodeURIComponent(previous.revision) + '&after=' + Math.max(0, previous.messages.length - 1) : '';
   try { chat = await api('/api/chats/' + encodeURIComponent(id) + query); }
   catch (e) {
-    if (current !== id) return;
+    if (current !== id || request !== chatRequest) return;
     if (e.status === 404) return newChat();
     pollTimer = setTimeout(() => openChat(id), 2500);
     return;
   }
-  if (current !== id) return;
+  if (current !== id || request !== chatRequest) return;
   if (chat.unchanged && previous) chat = {...previous, running: chat.running};
   else if (chat.from_index !== undefined && previous) {
     chat.messages = [...previous.messages.slice(0, chat.from_index), ...chat.messages];
@@ -991,16 +1081,19 @@ function cachedMessage(message, render) {
   if (!messageMarkup.has(message)) messageMarkup.set(message, render());
   return messageMarkup.get(message);
 }
-function reconcileThread(html) {
+let threadMarkup = [], threadNodes = [];
+function reconcileThread(chunks) {
   const thread = $('#thread'), template = document.createElement('template');
-  template.innerHTML = html;
-  const next = [...template.content.children];
-  next.forEach((node, i) => {
+  chunks.forEach((html, i) => {
     const old = thread.children[i];
+    if (old && old === threadNodes[i] && html === threadMarkup[i]) return;
+    template.innerHTML = html;
+    const node = template.content.firstElementChild;
     if (!old) thread.append(node);
     else if (!old.isEqualNode(node)) old.replaceWith(node);
   });
-  while (thread.children.length > next.length) thread.lastElementChild.remove();
+  while (thread.children.length > chunks.length) thread.lastElementChild.remove();
+  threadMarkup = chunks; threadNodes = [...thread.children];
 }
 
 function renderThread(chat, jump) {
@@ -1028,12 +1121,12 @@ function renderThread(chat, jump) {
     const acts = m.status === 'done' && (m.parts || []).some(p => p.type === 'text')
       ? `<div class="acts"><button data-copy="${i}">复制</button><button data-export="${i}">导出 / 分享</button></div>` : '';
     return `<div class="msg"><img class="avatar" src="/icon.png" alt=""><div class="body">${parts}${draft}${busy}${err}${meta}${acts}</div></div>`;
-  })).join('') + (chat.queued || []).map(q => {
+  })).concat((chat.queued || []).map(q => {
     const imgs = (q.images || []).map(n => `<img src="/api/chats/${esc(chat.id)}/images/${esc(n)}" data-zoom>`).join('');
     return `<div class="msg user queued"><div class="col">${imgs ? `<div class="uimgs">${imgs}</div>` : ''}
       ${q.text ? `<div class="bubble">${esc(q.text)}</div>` : ''}
       <div class="qnote">排队中 · 当前回答结束后自动发送<button data-unqueue="${esc(q.id)}">取消</button></div></div></div>`;
-  }).join('');
+  }));
   reconcileThread(threadHtml);
   document.querySelectorAll('[data-unqueue]').forEach(b => b.onclick = async () => {
     try { await api(`/api/chats/${encodeURIComponent(chat.id)}/queue/${b.dataset.unqueue}`, {method: 'DELETE'}); } catch {}

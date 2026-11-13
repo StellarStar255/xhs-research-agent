@@ -5,6 +5,7 @@ import threading
 import time
 import tempfile
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -255,7 +256,7 @@ def export_backup(save: bool = False):
 
 
 @app.post("/api/backup/import")
-async def import_backup(request: Request):
+async def import_backup(request: Request, preview: bool = False):
     from . import backup
     from starlette.concurrency import run_in_threadpool
     with tempfile.TemporaryDirectory(prefix="xhs-upload-") as tmp:
@@ -268,7 +269,7 @@ async def import_backup(request: Request):
                     raise HTTPException(413, "备份文件不能超过 256 MB")
                 out.write(chunk)
         try:
-            return await run_in_threadpool(backup.import_from, f)
+            return await run_in_threadpool(backup.import_from, f, preview)
         except RuntimeError as e:
             raise HTTPException(409, str(e))
         except (ValueError, TypeError, AttributeError, KeyError, OSError) as e:
@@ -328,7 +329,7 @@ def chat(cid: str, since: str = "", after: int = 0):
     try:
         # Sample before reading: a later atomic replacement must trigger another poll.
         st = agent._path(cid).stat()
-        c = agent.load(cid)
+        c = dict(_chat_snapshot(agent._path(cid), st.st_mtime_ns, st.st_ctime_ns, st.st_size))
     except (FileNotFoundError, ValueError):
         raise HTTPException(404)
     active = [p for msg in c["messages"] if msg["role"] == "assistant"
@@ -336,7 +337,7 @@ def chat(cid: str, since: str = "", after: int = 0):
     sessions = {p["session"] for p in active if p.get("session")}
     progress = _running_progress(sessions) if sessions else None
     c["running"] = agent.is_running(cid)
-    c["revision"] = f"{st.st_mtime_ns}-{st.st_size}-{int(c['running'])}-{progress}"
+    c["revision"] = f"{st.st_mtime_ns}-{st.st_ctime_ns}-{st.st_size}-{int(c['running'])}-{progress}"
     if since == c["revision"]:
         return {"unchanged": True, "revision": c["revision"], "running": c["running"]}
     c.pop("llm_history", None)
@@ -344,6 +345,7 @@ def chat(cid: str, since: str = "", after: int = 0):
     if since and 0 <= after < len(c["messages"]):
         c["messages"] = c["messages"][after:]
         c["from_index"] = after
+    c["messages"] = [{**m, **({"parts": [dict(p) for p in m.get("parts", [])]} if m["role"] == "assistant" else {})} for m in c["messages"]]
     for msg in c["messages"]:
         if msg["role"] != "assistant":
             continue
@@ -355,6 +357,12 @@ def chat(cid: str, since: str = "", after: int = 0):
         if msg.get("draft"):
             msg["draft_html"] = _md(msg["draft"])
     return c
+
+
+@lru_cache(maxsize=8)
+def _chat_snapshot(path, modified, changed, size):
+    """Immutable raw records; same-revision polls avoid parsing long JSON histories."""
+    return agent.load(path.stem)
 
 
 @app.get("/api/chats/{cid}/images/{name}")

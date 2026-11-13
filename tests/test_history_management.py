@@ -13,6 +13,31 @@ from xhs_reader.persistence import atomic_json
 
 
 class HistoryManagementTests(IsolatedTest):
+    def test_backup_preview_is_read_only_and_final_import_rechecks_duplicates(self):
+        record = {'id': 'incoming', 'title': '导入预览', 'messages': []}
+        archive = self.make_archive({'chats/incoming.json': json.dumps(record), 'chats/incoming/0.png': 'image'})
+        result = backup.import_from(archive, preview=True)
+        self.assertEqual(result['imported'], 1)
+        self.assertEqual(result['attachments'], 1)
+        self.assertFalse(agent._path('incoming').exists())
+        self.chat('incoming', title='预览后新建')
+        result = backup.import_from(archive, preview=True)
+        self.assertEqual(result['duplicates'], ['导入预览'])
+        self.assertEqual(backup.import_from(archive)['skipped'], 1)
+        self.assertEqual(agent.load('incoming')['title'], '预览后新建')
+
+    def test_same_revision_polls_reuse_snapshot_and_equal_length_rename_is_visible(self):
+        self.chat(title='原名')
+        with patch.object(agent, 'load', wraps=agent.load) as reads:
+            first = server.chat('test-chat')
+            second = server.chat('test-chat', since=first['revision'])
+            self.assertTrue(second['unchanged'])
+            self.assertEqual(reads.call_count, 1)
+            agent.rename('test-chat', '新名')
+            renamed = server.chat('test-chat', since=first['revision'])
+            self.assertEqual(renamed['title'], '新名')
+            self.assertNotEqual(first['revision'], renamed['revision'])
+
     def test_backup_import_rolls_back_new_data_on_commit_failure(self):
         self.chat('existing', title='保留本机记录')
         record = {'id': 'incoming', 'title': '导入', 'messages': []}

@@ -65,7 +65,7 @@ def _allowed(name):
     return False
 
 
-def import_from(source):
+def import_from(source, preview=False):
     with agent._lock:
         _idle()
     if Path(source).stat().st_size > MAX_ARCHIVE:
@@ -161,28 +161,34 @@ def import_from(source):
         moved = []
         with agent._lock:
             _idle()
-            try:
-                for f in records:
-                    trashed = f.name == "record.json"
-                    cid = f.parent.name if trashed else f.stem
-                    target = agent.CHATS_DIR / ".trash" / cid if trashed else agent._path(cid)
-                    if agent._path(cid).exists() or agent.image_dir(cid).exists() or (agent.CHATS_DIR / ".trash" / cid).exists():
-                        result["skipped"] += 1
-                        continue
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    image_source = f.with_suffix("")
-                    if not trashed and image_source.exists():
-                        image_source.rename(agent.image_dir(cid)); moved.append(agent.image_dir(cid))
-                    (f.parent if trashed else f).rename(target)
-                    moved.append(target)
-                    result["trash" if trashed else "imported"] += 1
-                for folder in (stage / "research").glob("*"):
-                    target = store.RESEARCH_DIR / folder.name
-                    if target.exists():
-                        continue
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    folder.rename(target); moved.append(target)
+            plan, seen, duplicates = [], set(), []
+            for f in records:
+                trashed = f.name == "record.json"
+                cid = f.parent.name if trashed else f.stem
+                target = agent.CHATS_DIR / ".trash" / cid if trashed else agent._path(cid)
+                if cid in seen or agent._path(cid).exists() or agent.image_dir(cid).exists() or (agent.CHATS_DIR / ".trash" / cid).exists():
+                    result["skipped"] += 1
+                    if len(duplicates) < 10:
+                        duplicates.append(json.loads(f.read_text(encoding="utf-8"))["title"])
+                    continue
+                seen.add(cid)
+                if not trashed and f.with_suffix("").exists():
+                    plan.append((f.with_suffix(""), agent.image_dir(cid)))
+                plan.append((f.parent if trashed else f, target))
+                result["trash" if trashed else "imported"] += 1
+            for folder in (stage / "research").glob("*"):
+                if not (store.RESEARCH_DIR / folder.name).exists():
+                    plan.append((folder, store.RESEARCH_DIR / folder.name))
                     result["research"] += 1
+            if preview:
+                return {**result, "conversations": len(records), "duplicates": duplicates,
+                        "attachments": sum(PurePosixPath(i.filename).suffix.lower() in (".jpg", ".jpeg", ".png", ".webp", ".gif") for i in entries),
+                        "expanded_bytes": sum(i.file_size for i in entries)}
+            try:
+                for source_path, target in plan:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    source_path.rename(target)
+                    moved.append(target)
             except Exception:
                 for target in reversed(moved):
                     if target.is_dir():

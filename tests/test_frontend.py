@@ -12,6 +12,12 @@ from xhs_reader import agent, server, settings
 
 @unittest.skipUnless(os.environ.get('XHS_BROWSER_TEST') == '1', 'optional local Chrome check')
 class FrontendTests(IsolatedTest):
+    def setUp(self):
+        super().setUp()
+        from xhs_reader import suggestions
+        self.stack.enter_context(patch.object(suggestions, 'get', return_value={
+            'items': [], 'personal': False, 'pending': False, 'revision': '', 'failed': False}))
+
     def test_incremental_updates_preserve_history_and_block_html(self):
         import uvicorn
         from playwright.sync_api import sync_playwright
@@ -232,6 +238,103 @@ class FrontendTests(IsolatedTest):
                 browser.close()
 
 
+    def test_keyboard_retry_multiwindow_sync_and_long_history(self):
+        import json
+        import uvicorn
+        from playwright.sync_api import sync_playwright, expect
+
+        settings.accept_notice()
+        for cid, title in [('first', '第一段聊天'), ('second', '第二段聊天')]:
+            self.chat(cid, title=title, messages=[{'role': 'user', 'text': title}])
+        self.stack.enter_context(patch.object(server, '_login_status', return_value={'logged_in': True}))
+        sock = socket.socket(); sock.bind(('127.0.0.1', 0)); sock.listen()
+        srv = uvicorn.Server(uvicorn.Config(server.app, log_level='error'))
+        thread = threading.Thread(target=srv.run, kwargs={'sockets': [sock]}, daemon=True)
+        thread.start()
+        def shutdown():
+            srv.should_exit = True; thread.join(5); sock.close()
+        self.addCleanup(shutdown)
+        deadline = time.monotonic() + 5
+        while not srv.started and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertTrue(srv.started)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(channel='chrome', headless=True)
+            context = browser.new_context()
+            try:
+                page = context.new_page()
+                errors = []
+                page.on('pageerror', lambda e: errors.append(str(e)))
+                base = f'http://127.0.0.1:{sock.getsockname()[1]}/'
+                page.goto(base + '#c=first')
+                page.wait_for_selector('#chats .chat-item')
+                page.evaluate("window.listNode = document.querySelector('#chats .chat-item')")
+                page.route('**/api/chats?*', lambda route: route.fulfill(status=503, body='{}', content_type='application/json'))
+                page.evaluate('loadChats()')
+                expect(page.locator('#chatListRetry')).to_be_visible()
+                self.assertEqual(page.locator('#chats .chat-item').count(), 2)
+                self.assertTrue(page.evaluate("window.listNode === document.querySelector('#chats .chat-item')"))
+                page.unroute('**/api/chats?*')
+                page.locator('#chatListRetry').click()
+                expect(page.locator('#chatListStatus')).to_be_hidden()
+                page.keyboard.press('Control+k')
+                expect(page.locator('#chatSearch')).to_be_focused()
+                page.locator('#chatSearch').fill('第一段')
+                page.locator('#chatSearch').press('ArrowDown')
+                expect(page.locator('[data-id="first"]')).to_be_focused()
+                page.keyboard.press('Enter')
+                page.wait_for_function("lastChat?.id === 'first'")
+                page.keyboard.press('Escape')
+                expect(page.locator('#chatSearch')).to_be_focused()
+                page.locator('#chatSearch').press('Escape')
+                expect(page.locator('#chats .chat-item')).to_have_count(2)
+
+                other = context.new_page()
+                other.on('pageerror', lambda e: errors.append(str(e)))
+                other.goto(base + '#c=first')
+                other.locator('[data-id="first"] .t').dblclick()
+                other.locator('input.rename').fill('另一个窗口修改')
+                other.locator('input.rename').press('Enter')
+                page.bring_to_front()
+                expect(page.locator('[data-id="first"] .t')).to_have_text('另一个窗口修改')
+                # A server-side change from another browser is picked up on focus/poll.
+                agent.organize('first', archived=True)
+                page.evaluate('syncHistory()')
+                expect(page.locator('[data-id="first"]')).to_have_count(0)
+                agent.delete('first')
+                page.evaluate('syncHistory()')
+                page.wait_for_function('current === null')
+                other.close()
+                page.evaluate('clearTimeout(examplesTimer); clearTimeout(syncTimer); clearTimeout(pollTimer)')
+                metrics = page.evaluate("""() => {
+                    const chunks = Array.from({length:1500}, (_, i) => `<div class="msg"><p>历史消息 ${i} ${'较长的对话内容'.repeat(20)}</p></div>`);
+                    reconcileThread(chunks);
+                    const first = document.querySelector('#thread').firstElementChild;
+                    const observer = new MutationObserver(() => {}); observer.observe(document.querySelector('#thread'), {childList:true});
+                    const fast=[], baseline=[];
+                    for (let i=0; i<5; i++) {
+                        chunks[chunks.length-1] = `<div class="msg">新增回答 ${i}</div>`;
+                        let start = performance.now(); reconcileThread(chunks); fast.push(performance.now()-start);
+                        start = performance.now();
+                        const template = document.createElement('template'); template.innerHTML = chunks.join('');
+                        [...template.content.children].forEach((node, index) => {
+                            const old = document.querySelector('#thread').children[index]; if (!old.isEqualNode(node)) old.replaceWith(node);
+                        });
+                        baseline.push(performance.now()-start);
+                    }
+                    const changes = observer.takeRecords(); observer.disconnect();
+                    return {messages:chunks.length, fast_ms:fast.sort((a,b)=>a-b)[2], baseline_ms:baseline.sort((a,b)=>a-b)[2],
+                      first_preserved:first===document.querySelector('#thread').firstElementChild, mutations:changes.length};
+                }""")
+                self.assertTrue(metrics['first_preserved'])
+                self.assertLessEqual(metrics['mutations'], 10)
+                (self.tmp / 'performance.json').write_text(json.dumps(metrics))
+                from pathlib import Path
+                Path('/private/tmp/xhs-history-performance.json').write_text(json.dumps(metrics))
+                self.assertFalse(errors, errors)
+            finally:
+                context.close(); browser.close()
+
     def test_history_management_backup_filters_and_progress(self):
         import uvicorn
         from playwright.sync_api import sync_playwright, expect
@@ -311,6 +414,12 @@ class FrontendTests(IsolatedTest):
                 page.locator('[data-purge="test-chat"]').click()
                 expect(page.locator('[data-purge="test-chat"]')).to_have_count(0)
                 page.locator('#backupFile').set_input_files(archive)
+                expect(page.locator('#backupPreview')).to_contain_text('预计新增 1 个对话')
+                self.assertFalse(agent._path('test-chat').exists())
+                page.locator('#backupCancel').click()
+                self.assertFalse(agent._path('test-chat').exists())
+                page.locator('#backupFile').set_input_files(archive)
+                page.locator('#backupConfirm').click()
                 expect(page.locator('#backupResult')).to_contain_text('已导入 1 个对话')
                 expect(page.locator('#backupResult')).to_contain_text('跳过 1 个已有对话')
                 page.wait_for_selector('[data-id="test-chat"]')
