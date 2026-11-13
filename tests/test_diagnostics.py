@@ -4,10 +4,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from test_optimizations import IsolatedTest
-from xhs_reader import diagnostics, server, settings
+from xhs_reader import diagnostics, paths, server, settings
 
 
 class DiagnosticsTests(IsolatedTest):
+    def test_native_validation_can_isolate_its_export_destination(self):
+        target = self.tmp / 'isolated-exports'
+        with patch.dict('os.environ', {'XHS_EXPORT_DIR': str(target)}):
+            self.assertEqual(paths.downloads_dir(), target)
+
     def test_native_draft_export_saves_exact_text_and_images(self):
         from starlette.requests import Request
         home = self.tmp / 'home'; home.mkdir()
