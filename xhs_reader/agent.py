@@ -124,6 +124,29 @@ def rename(cid, title):
         os.utime(f, (st.st_atime, st.st_mtime))
 
 
+_search_cache = {}  # path -> (file revision, sidebar metadata, searchable message text)
+
+
+def _search_record(f):
+    with _lock:
+        st = f.stat()
+        revision = (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
+        cached = _search_cache.get(f)
+        if cached and cached[0] == revision:
+            return cached[1:]
+        c = load(f.stem)
+        if "title" not in c:
+            raise ValueError("missing title")
+        metadata = {"id": c["id"], "title": c["title"], "updated": c.get("updated"),
+                    "backend": c.get("backend", "claude")}
+        texts = [c["title"]]
+        for m in c["messages"]:
+            texts.append(m.get("text", "") if m["role"] == "user" else "\n".join([
+                *(p.get("text", "") for p in m.get("parts", []) if p["type"] == "text"), m.get("draft", "")]))
+        _search_cache[f] = (revision, metadata, texts, "\n".join(texts).casefold())
+        return _search_cache[f][1:]
+
+
 def list_chats(query=""):
     # Match every whitespace-separated keyword anywhere in the visible conversation.
     keywords = query.casefold().split()
@@ -136,29 +159,36 @@ def list_chats(query=""):
             files.append((f.stat().st_mtime, f))
         except FileNotFoundError:
             continue
+    with _lock:
+        present = {f for _, f in files}
+        for f in list(_search_cache):
+            if f not in present:
+                _search_cache.pop(f, None)
     for _, f in sorted(files, reverse=True):
         try:
-            c = load(f.stem)
-            if "title" not in c:
-                raise ValueError("missing title")
+            metadata, texts, searchable = _search_record(f)
         except ValueError:
             quarantine(f)
             continue
         except OSError:
             continue
         if keywords:
-            texts = [c["title"]]
-            for message in c["messages"]:
-                if message["role"] == "user":
-                    texts.append(message.get("text", ""))
-                else:
-                    texts.extend(p.get("text", "") for p in message.get("parts", []) if p["type"] == "text")
-                    texts.append(message.get("draft", ""))
-            searchable = "\n".join(texts).casefold()
             if not all(word in searchable for word in keywords):
                 continue
-        out.append({"id": c["id"], "title": c["title"], "updated": c.get("updated"),
-                    "backend": c.get("backend", "claude"), "running": is_running(c["id"])})
+        result = {**metadata, "running": is_running(metadata["id"])}
+        if keywords:
+            snippets = []
+            for word in dict.fromkeys(keywords):
+                text = next((t for t in texts[1:] if word in t.casefold()), texts[0])
+                pos = text.casefold().find(word)
+                start, end = max(0, pos - 25), min(len(text), pos + len(word) + 55)
+                snippet = ("…" if start else "") + text[start:end].replace("\n", " ") + ("…" if end < len(text) else "")
+                if snippet not in snippets:
+                    snippets.append(snippet)
+                if len(snippets) == 3:
+                    break
+            result["snippet"] = " · ".join(snippets)
+        out.append(result)
     return out
 
 

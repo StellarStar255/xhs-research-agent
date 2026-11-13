@@ -29,7 +29,7 @@ body { margin: 0; font: 15px/1.7 -apple-system, "PingFang SC", "Helvetica Neue",
 button { font: inherit; cursor: pointer; }
 
 /* sidebar */
-aside { width: 260px; flex-shrink: 0; background: var(--side); border-right: 1px solid var(--line);
+aside { width: var(--sidebar-width, 260px); position: relative; flex-shrink: 0; background: var(--side); border-right: 1px solid var(--line);
         display: flex; flex-direction: column; }
 .brand { padding: 18px 16px 12px; font-weight: 700; font-size: 16px; display: flex; align-items: center; gap: 8px; }
 .brand img { width: 26px; height: 26px; flex-shrink: 0; }
@@ -47,10 +47,23 @@ aside { width: 260px; flex-shrink: 0; background: var(--side); border-right: 1px
 .chat-item:hover { background: var(--panel); }
 .chat-item.active { background: var(--accent-soft); }
 .chat-item .t { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-summary { flex: 1; min-width: 0; }
+.chat-summary .t { display: block; }
+.chat-snippet { color: var(--muted); font-size: 12px; line-height: 1.5; display: -webkit-box;
+                -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+mark.search-hit { background: #ffd76a; color: #201900; border-radius: 2px; }
+.msg.search-current { outline: 2px solid var(--accent); outline-offset: 5px; border-radius: 5px; }
+.search-nav { padding: 6px 14px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.search-nav button { background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 5px; margin-left: 6px; }
+.search-nav[hidden] { display: none; }
+.side-resize { position: absolute; right: -4px; top: 0; bottom: 0; width: 8px; z-index: 9; cursor: col-resize; touch-action: none; }
+.side-resize:hover, .side-resize:focus-visible { background: var(--accent-soft); }
+body.resizing { cursor: col-resize; user-select: none; }
 .chat-item .x { visibility: hidden; border: 0; background: none; color: var(--muted); padding: 0 4px; }
 .chat-item .x:hover { color: var(--accent); }
 .chat-item input.rename { flex: 1; min-width: 0; font: inherit; color: var(--ink); background: var(--panel);
                           border: 1px solid var(--accent); border-radius: 6px; padding: 1px 6px; outline: none; }
+.chat-summary input.rename { width: 100%; }
 .chat-item:hover .x { visibility: visible; }
 .login { padding: 12px 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted);
          display: flex; align-items: center; gap: 6px; }
@@ -252,6 +265,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 /* phone layout: the sidebar becomes a slide-in menu */
 .topbar, .backdrop { display: none; }
 @media (max-width: 760px) {
+  .side-resize { display: none; }
   body { height: 100dvh; }
   aside { position: fixed; z-index: 8; top: 0; bottom: 0; left: 0; width: min(300px, 84vw); transform: translateX(-100%);
           transition: transform .2s; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
@@ -281,6 +295,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 </head>
 <body>
 <aside>
+  <div id="sideResize" class="side-resize" role="separator" aria-label="调整侧栏宽度" aria-orientation="vertical" tabindex="0" aria-valuemin="240" aria-valuemax="520" aria-valuenow="260"></div>
   <div class="brand"><img src="/icon.png" alt=""> 种草调研助手</div>
   <div class="upd" id="updBanner" hidden>⬆ 新版本 <span id="updVer"></span> 可用<b>更新</b></div>
   <button class="new" id="newChat">＋ 新对话</button>
@@ -299,6 +314,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 <main>
   <div class="topbar"><button id="menuBtn" aria-label="对话列表">☰</button><span class="tb-title" id="tbTitle">种草调研助手</span>
     <button id="tbNew" aria-label="新对话">＋</button></div>
+  <div id="searchNav" class="search-nav" hidden><span id="searchPosition" role="status"></span><button id="searchPrev" aria-label="上一个匹配消息">↑ 上一个</button><button id="searchNext" aria-label="下一个匹配消息">↓ 下一个</button><button id="searchClose" aria-label="关闭对话内搜索定位">×</button></div>
   <div id="scroll"><div class="thread" id="thread"></div></div>
   <div class="composer">
     <div class="box">
@@ -352,8 +368,21 @@ async function api(path, opts = {}) {
 
 /* ---------- sidebar ---------- */
 let renaming = false;  // don't redraw the list while a name is being edited
-let chatSearchTimer, chatListRequest = 0;
+let chatSearchTimer, chatListRequest = 0, searchComposing = false;
+const searchWords = query => [...new Set(query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean))];
+function highlighted(text, query) {
+  const words = searchWords(query).sort((a, b) => b.length - a.length);
+  if (!words.length) return esc(text);
+  const pattern = new RegExp(words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'giu');
+  let out = '', start = 0;
+  for (const match of text.matchAll(pattern)) {
+    out += esc(text.slice(start, match.index)) + '<mark class="search-hit">' + esc(match[0]) + '</mark>';
+    start = match.index + match[0].length;
+  }
+  return out + esc(text.slice(start));
+}
 async function loadChats() {
+  if (searchComposing) return;
   const request = ++chatListRequest;
   const query = $('#chatSearch').value.trim();
   let list;
@@ -365,19 +394,25 @@ async function loadChats() {
   if (renaming || request !== chatListRequest || query !== $('#chatSearch').value.trim()) return;
   $('#chats').innerHTML = list.map(c => `
     <div class="chat-item ${c.id === current ? 'active' : ''}" data-id="${esc(c.id)}">
-      ${c.running ? '<span class="spin"></span>' : ''}<span class="t" title="${esc(c.title)}">${esc(c.title)}</span>
+      ${c.running ? '<span class="spin"></span>' : ''}<div class="chat-summary"><span class="t" title="${esc(c.title)}">${highlighted(c.title, query)}</span>
+      ${c.snippet ? `<div class="chat-snippet">${highlighted(c.snippet, query)}</div>` : ''}</div>
       <button class="x" data-ren="${esc(c.id)}" title="重命名">✎</button>
       <button class="x" data-del="${esc(c.id)}" title="删除">×</button>
     </div>`).join('') || `<div class="chat-search-state" role="status">${query ? '没有找到同时包含这些关键词的对话' : '暂无历史对话'}</div>`;
 }
 $('#chatSearch').addEventListener('input', () => {
   clearTimeout(chatSearchTimer);
+  clearSearchNavigation();
   chatListRequest++;  // immediately invalidate responses for an older query
-  chatSearchTimer = setTimeout(loadChats, 200);
+  if (!searchComposing) chatSearchTimer = setTimeout(loadChats, 200);
 });
+$('#chatSearch').addEventListener('compositionstart', () => { searchComposing = true; clearTimeout(chatSearchTimer); chatListRequest++; });
+$('#chatSearch').addEventListener('compositionend', () => { searchComposing = false; clearTimeout(chatSearchTimer); chatSearchTimer = setTimeout(loadChats, 200); });
 $('#chatSearch').addEventListener('keydown', e => {
+  if (e.isComposing || searchComposing) return;
   if (e.key === 'Escape') {
     e.preventDefault(); $('#chatSearch').value = '';
+    clearSearchNavigation();
     clearTimeout(chatSearchTimer); loadChats();
   } else if (e.key === 'Enter' && !e.isComposing) {
     clearTimeout(chatSearchTimer); loadChats();
@@ -414,7 +449,7 @@ function startRename(item) {
   input.onblur = () => finish(true);
   input.onclick = e => e.stopPropagation();
 }
-$('#chats').ondblclick = e => { const item = e.target.closest('.chat-item'); if (item && e.target.classList.contains('t')) startRename(item); };
+$('#chats').ondblclick = e => { const item = e.target.closest('.chat-item'); if (item && e.target.closest('.t')) startRename(item); };
 $('#chats').onclick = async e => {
   if (e.target.dataset.ren) { e.stopPropagation(); return startRename(e.target.closest('.chat-item')); }
   if (e.target.closest('input.rename')) return;
@@ -427,7 +462,80 @@ $('#chats').onclick = async e => {
     return loadChats();
   }
   const item = e.target.closest('.chat-item');
-  if (item) openChat(item.dataset.id);
+  if (item) {
+    const query = $('#chatSearch').value.trim();
+    clearSearchNavigation();
+    await openChat(item.dataset.id);
+    if (current === item.dataset.id && lastChat?.id === current && query === $('#chatSearch').value.trim()) {
+      activeSearch = query; searchIndex = 0; refreshSearchNavigation(true);
+    }
+  }
+};
+
+let activeSearch = '', searchIndex = 0, searchMessages = [];
+function clearSearchNavigation() {
+  activeSearch = ''; searchMessages = []; searchIndex = 0;
+  $('#searchNav').hidden = true;
+  $('#thread').querySelectorAll('mark.search-hit').forEach(mark => mark.replaceWith(document.createTextNode(mark.textContent)));
+  $('#thread').normalize();
+  $('#thread').querySelectorAll('.search-current').forEach(node => node.classList.remove('search-current'));
+}
+function refreshSearchNavigation(jump = false) {
+  if (!activeSearch) return;
+  $('#thread').querySelectorAll('mark.search-hit').forEach(mark => mark.replaceWith(document.createTextNode(mark.textContent)));
+  $('#thread').normalize();
+  const words = searchWords(activeSearch);
+  searchMessages = [];
+  [...$('#thread').children].forEach(message => {
+    message.classList.remove('search-current');
+    const walker = document.createTreeWalker(message, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (node.parentElement.closest('.bubble, .md') && !node.parentElement.closest('button')) nodes.push(node);
+    }
+    let hit = false;
+    nodes.forEach(node => {
+      if (!words.some(word => node.textContent.toLocaleLowerCase().includes(word))) return;
+      const template = document.createElement('template');
+      template.innerHTML = highlighted(node.textContent, activeSearch);
+      node.replaceWith(template.content); hit = true;
+    });
+    if (hit) searchMessages.push(message);
+  });
+  searchIndex = Math.min(searchIndex, Math.max(0, searchMessages.length - 1));
+  $('#searchNav').hidden = false;
+  $('#searchPosition').textContent = searchMessages.length ? `匹配消息 ${searchIndex + 1} / ${searchMessages.length}` : '关键词匹配对话标题，正文暂无可定位的匹配';
+  $('#searchPrev').disabled = $('#searchNext').disabled = searchMessages.length < 2;
+  const selected = searchMessages[searchIndex];
+  if (selected) {
+    selected.classList.add('search-current');
+    if (jump) $('#scroll').scrollTop += selected.getBoundingClientRect().top - $('#scroll').getBoundingClientRect().top - 20;
+  }
+}
+$('#searchPrev').onclick = () => { searchIndex = (searchIndex - 1 + searchMessages.length) % searchMessages.length; refreshSearchNavigation(true); };
+$('#searchNext').onclick = () => { searchIndex = (searchIndex + 1) % searchMessages.length; refreshSearchNavigation(true); };
+$('#searchClose').onclick = clearSearchNavigation;
+
+const resizeHandle = $('#sideResize');
+function setSidebarWidth(width) {
+  width = Math.round(Math.max(240, Math.min(520, innerWidth * .45, width)));
+  document.documentElement.style.setProperty('--sidebar-width', width + 'px');
+  resizeHandle.setAttribute('aria-valuenow', width);
+  return width;
+}
+try { const width = +localStorage.getItem('sidebarWidth'); if (width) setSidebarWidth(width); } catch {}
+function saveSidebarWidth() { try { localStorage.setItem('sidebarWidth', resizeHandle.getAttribute('aria-valuenow')); } catch {} }
+resizeHandle.onpointerdown = e => {
+  e.preventDefault(); resizeHandle.setPointerCapture(e.pointerId); document.body.classList.add('resizing');
+};
+resizeHandle.onpointermove = e => { if (resizeHandle.hasPointerCapture(e.pointerId)) setSidebarWidth(e.clientX); };
+resizeHandle.onpointerup = e => { resizeHandle.releasePointerCapture(e.pointerId); document.body.classList.remove('resizing'); saveSidebarWidth(); };
+resizeHandle.onlostpointercapture = () => document.body.classList.remove('resizing');
+resizeHandle.ondblclick = () => { setSidebarWidth(260); saveSidebarWidth(); };
+resizeHandle.onkeydown = e => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home'].includes(e.key)) return;
+  e.preventDefault(); setSidebarWidth(e.key === 'Home' ? 260 : +resizeHandle.getAttribute('aria-valuenow') + (e.key === 'ArrowLeft' ? -20 : 20)); saveSidebarWidth();
 };
 
 let loggedIn = null;  // true / false / null (unknown)
@@ -562,6 +670,7 @@ $('#scroll').addEventListener('scroll', () => { clearTimeout(scrollSaveTimer); s
 window.addEventListener('beforeunload', saveScroll);
 
 function newChat() {
+  clearSearchNavigation();
   stopExamples(); examplesSeen = []; examplesRevision = '';
   current = null; lastChat = null; lastJson = ''; running = false; clearTimeout(pollTimer); setUrl(null);
   $('#tbTitle').textContent = '种草调研助手';
@@ -637,7 +746,7 @@ async function loadExamples(more = false, polling = false) {
 async function openChat(id, restoring = false) {
   stopExamples();
   const switching = id !== current;
-  if (switching) { saveScroll(); lastJson = ''; }
+  if (switching) { clearSearchNavigation(); saveScroll(); lastJson = ''; }
   current = id;
   setUrl(id);
   clearTimeout(pollTimer);
@@ -792,8 +901,9 @@ function renderThread(chat, jump) {
   document.querySelectorAll('[data-zoom]').forEach(img => img.onclick = () => {
     $('#sheet').innerHTML = `<div class="zoom"><img src="${img.src}"></div>`; $('#modal').classList.add('show');
   });
-  document.querySelectorAll('.uimgs img').forEach(img => img.onload = () => { if (jump || nearBottom) sc.scrollTop = sc.scrollHeight; });
-  if (jump || nearBottom) sc.scrollTop = sc.scrollHeight;
+  document.querySelectorAll('.uimgs img').forEach(img => img.onload = () => { if (!activeSearch && (jump || nearBottom)) sc.scrollTop = sc.scrollHeight; });
+  if (!activeSearch && (jump || nearBottom)) sc.scrollTop = sc.scrollHeight;
+  refreshSearchNavigation();
 }
 
 /* ---------- copy & export ---------- */

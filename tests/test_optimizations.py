@@ -55,6 +55,23 @@ class IsolatedTest(unittest.TestCase):
 
 
 class ChatSearchTests(IsolatedTest):
+    def test_cached_search_avoids_rereads_and_invalidates_changed_files(self):
+        self.chat(messages=[{'role': 'user', 'text': '黄启亮 身份证 <script>文本</script>'}])
+        with patch.object(agent, 'load', wraps=agent.load) as reads:
+            result = agent.list_chats('身份证 黄启亮')
+            self.assertIn('身份证', result[0]['snippet'])
+            agent.list_chats('黄启亮')
+            agent.list_chats()
+            self.assertEqual(reads.call_count, 1)
+            chat = agent.load('test-chat')
+            chat['messages'][0]['text'] = '换成护照'
+            agent._save(chat)
+            self.assertEqual(agent.list_chats('身份证'), [])
+            self.assertEqual(len(agent.list_chats('护照')), 1)
+        agent.delete('test-chat')
+        agent.list_chats()
+        self.assertNotIn(agent._path('test-chat'), agent._search_cache)
+
     def test_keywords_match_across_title_questions_and_answers_in_any_order(self):
         self.chat('match', title='办理证件', messages=[
             {'role': 'user', 'text': '黄启亮需要准备哪些材料？'},
