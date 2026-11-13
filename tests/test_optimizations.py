@@ -54,6 +54,32 @@ class IsolatedTest(unittest.TestCase):
         return chat
 
 
+class ChatSearchTests(IsolatedTest):
+    def test_keywords_match_across_title_questions_and_answers_in_any_order(self):
+        self.chat('match', title='办理证件', messages=[
+            {'role': 'user', 'text': '黄启亮需要准备哪些材料？'},
+            {'role': 'assistant', 'parts': [{'type': 'text', 'text': '请携带身份证和 ID Card。'}]},
+        ])
+        self.chat('partial', title='身份证', messages=[{'role': 'user', 'text': '其他人的材料'}])
+        for query in ('身份证 黄启亮', '黄启亮 身份证', '  身份证　 黄启亮\t', '办理 黄启亮', 'id CARD 黄启亮'):
+            with self.subTest(query=query):
+                self.assertEqual([c['id'] for c in server.chats(query)], ['match'])
+        self.assertEqual(server.chats('身份证 不存在'), [])
+        self.assertEqual(len(server.chats(' \t')), 2)
+        self.assertEqual(len(server.chats()), 2)
+
+    def test_search_updates_after_edit_and_delete_and_ignores_internal_data(self):
+        chat = self.chat(title='普通对话', model_config={'model': '隐藏模型'})
+        chat['messages'][-1]['draft'] = '正在回答身份证'
+        agent._save(chat)
+        self.assertEqual(len(agent.list_chats('身份证')), 1)
+        self.assertEqual(agent.list_chats('隐藏模型'), [])
+        agent.rename('test-chat', '黄启亮')
+        self.assertEqual(len(agent.list_chats('身份证 黄启亮')), 1)
+        agent.delete('test-chat')
+        self.assertEqual(agent.list_chats('身份证'), [])
+
+
 class RenderingTests(unittest.TestCase):
     def test_dangerous_html_is_inert(self):
         cases = ['<img src=x onerror="alert(1)">', '<svg onload=alert(1)>x</svg>',

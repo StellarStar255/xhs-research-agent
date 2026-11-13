@@ -124,7 +124,9 @@ def rename(cid, title):
         os.utime(f, (st.st_atime, st.st_mtime))
 
 
-def list_chats():
+def list_chats(query=""):
+    # Match every whitespace-separated keyword anywhere in the visible conversation.
+    keywords = query.casefold().split()
     if not CHATS_DIR.exists():
         return []
     out = []
@@ -144,6 +146,17 @@ def list_chats():
             continue
         except OSError:
             continue
+        if keywords:
+            texts = [c["title"]]
+            for message in c["messages"]:
+                if message["role"] == "user":
+                    texts.append(message.get("text", ""))
+                else:
+                    texts.extend(p.get("text", "") for p in message.get("parts", []) if p["type"] == "text")
+                    texts.append(message.get("draft", ""))
+            searchable = "\n".join(texts).casefold()
+            if not all(word in searchable for word in keywords):
+                continue
         out.append({"id": c["id"], "title": c["title"], "updated": c.get("updated"),
                     "backend": c.get("backend", "claude"), "running": is_running(c["id"])})
     return out

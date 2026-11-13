@@ -182,8 +182,8 @@ def favicon():
 
 
 @app.get("/api/chats")
-def chats():
-    return agent.list_chats()
+def chats(q: str = ""):
+    return agent.list_chats(q)
 
 
 def _require_notice():
