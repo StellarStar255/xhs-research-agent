@@ -77,7 +77,10 @@ def start(chat, text, image_names, turn_id=""):
     cmd += _mcp_config(turn_id)
     for name in image_names or []:
         cmd += ["-i", str(agent.image_dir(chat["id"]) / name)]
-    cmd.append(text or agent.DEFAULT_IMAGE_PROMPT)
+    prompt = text or agent.DEFAULT_IMAGE_PROMPT
+    if not thread and len(chat.get("messages", [])) > 2:
+        prompt = "此前的对话：\n" + agent._transcript(chat) + "\n\n当前问题：\n" + prompt
+    cmd.append(prompt)
 
     env = paths.child_env()
     env["PATH"] = os.pathsep.join([str(Path(codex).parent), env.get("PATH", "")])

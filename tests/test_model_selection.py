@@ -100,3 +100,20 @@ class ModelSelectionTests(IsolatedTest):
         config = agent.load('test-chat')['model_config']
         self.assertEqual(config['codex_model'], '')
         self.assertEqual(config['codex_effort'], '')
+
+    def test_fresh_codex_session_carries_imported_conversation_context(self):
+        chat = self.chat(backend='codex', messages=[
+            {'role': 'user', 'text': '之前的提问'},
+            {'role': 'assistant', 'parts': [{'type': 'text', 'text': '之前的回答'}]},
+            {'role': 'user', 'text': '接着问'},
+            {'role': 'assistant', 'parts': []},
+        ])
+        with patch.object(settings, 'find_codex', return_value='codex'), patch.object(codex_backend, '_features_to_disable', return_value=[]), patch.object(codex_backend.procutil, 'popen') as spawn:
+            codex_backend.start(chat, '接着问', [], 'turn')
+            prompt = spawn.call_args.args[0][-1]
+            self.assertIn('之前的提问', prompt)
+            self.assertIn('之前的回答', prompt)
+            self.assertTrue(prompt.endswith('接着问'))
+            chat['codex_thread'] = 'existing-thread'
+            codex_backend.start(chat, '接着问', [], 'turn')
+            self.assertEqual(spawn.call_args.args[0][-1], '接着问')

@@ -88,6 +88,10 @@ def image_dir(cid):
 
 def load(cid):
     chat = read_json(_path(cid))
+    return validate_chat(chat, cid)
+
+
+def validate_chat(chat, cid):
     if not isinstance(chat, dict) or chat.get("id") != cid or not isinstance(chat.get("messages"), list):
         raise ValueError("bad chat record")
     for message in chat["messages"]:
@@ -110,6 +114,7 @@ def update(cid, fn):
     with _lock:
         chat = load(cid)
         fn(chat, chat["messages"][-1])
+        chat["messages"][-1]["last_activity"] = time.time()
         _save(chat)
 
 
@@ -122,6 +127,18 @@ def rename(cid, title):
         chat["title"] = title
         _save(chat)
         os.utime(f, (st.st_atime, st.st_mtime))
+
+
+def organize(cid, pinned=None, archived=None):
+    with _lock:
+        chat = load(cid)
+        st = _path(cid).stat()
+        if pinned is not None:
+            chat["pinned"] = pinned
+        if archived is not None:
+            chat["archived"] = archived
+        _save(chat)
+        os.utime(_path(cid), ns=(st.st_atime_ns, st.st_mtime_ns))
 
 
 _search_cache = {}  # path -> (file revision, sidebar metadata, searchable message text)
@@ -138,16 +155,17 @@ def _search_record(f):
         if "title" not in c:
             raise ValueError("missing title")
         metadata = {"id": c["id"], "title": c["title"], "updated": c.get("updated"),
+                    "created": c.get("created"), "pinned": bool(c.get("pinned")), "archived": bool(c.get("archived")),
                     "backend": c.get("backend", "claude")}
         texts = [c["title"]]
         for m in c["messages"]:
             texts.append(m.get("text", "") if m["role"] == "user" else "\n".join([
                 *(p.get("text", "") for p in m.get("parts", []) if p["type"] == "text"), m.get("draft", "")]))
-        _search_cache[f] = (revision, metadata, texts, "\n".join(texts).casefold())
+        _search_cache[f] = (revision, metadata, texts, "\n".join(texts).casefold(), [m["role"] for m in c["messages"]])
         return _search_cache[f][1:]
 
 
-def list_chats(query=""):
+def list_chats(query="", scope="all", view="active", since="", until=""):
     # Match every whitespace-separated keyword anywhere in the visible conversation.
     keywords = query.casefold().split()
     if not CHATS_DIR.exists():
@@ -166,20 +184,29 @@ def list_chats(query=""):
                 _search_cache.pop(f, None)
     for _, f in sorted(files, reverse=True):
         try:
-            metadata, texts, searchable = _search_record(f)
+            metadata, texts, searchable, roles = _search_record(f)
         except ValueError:
             quarantine(f)
             continue
         except OSError:
             continue
+        if view != "all" and metadata["archived"] != (view == "archived"):
+            continue
+        date = (metadata.get("updated") or metadata.get("created") or "")[:10]
+        if (since and date < since) or (until and date > until):
+            continue
+        search_texts = texts if scope == "all" else [t for t, role in zip(texts[1:], roles) if role == scope]
         if keywords:
+            if scope != "all":
+                searchable = "\n".join(search_texts).casefold()
             if not all(word in searchable for word in keywords):
                 continue
         result = {**metadata, "running": is_running(metadata["id"])}
         if keywords:
             snippets = []
             for word in dict.fromkeys(keywords):
-                text = next((t for t in texts[1:] if word in t.casefold()), texts[0])
+                candidates = texts[1:] + texts[:1] if scope == "all" else search_texts
+                text = next((t for t in candidates if word in t.casefold()), "")
                 pos = text.casefold().find(word)
                 start, end = max(0, pos - 25), min(len(text), pos + len(word) + 55)
                 snippet = ("…" if start else "") + text[start:end].replace("\n", " ") + ("…" if end < len(text) else "")
@@ -189,7 +216,7 @@ def list_chats(query=""):
                     break
             result["snippet"] = " · ".join(snippets)
         out.append(result)
-    return out
+    return sorted(out, key=lambda c: not c["pinned"])
 
 
 def delete(cid):
@@ -206,11 +233,71 @@ def delete(cid):
         raise RuntimeError("任务还在停止，请稍后再删除")
     with _lock:
         try:
-            _path(cid).unlink(missing_ok=True)
-            shutil.rmtree(image_dir(cid), ignore_errors=True)
+            record = _path(cid)
+            if not record.exists():
+                return
+            dest = CHATS_DIR / ".trash" / cid
+            dest.mkdir(parents=True, exist_ok=False)
+            moved_images = False
+            try:
+                if image_dir(cid).exists():
+                    image_dir(cid).rename(dest / "images")
+                    moved_images = True
+                record.rename(dest / "record.json")
+            except Exception:
+                if moved_images:
+                    (dest / "images").rename(image_dir(cid))
+                dest.rmdir()
+                raise
             _runs.pop(cid, None)
         finally:
             _deleting.discard(cid)
+
+
+def list_trash():
+    out = []
+    for f in (CHATS_DIR / ".trash").glob("*/record.json"):
+        try:
+            c = validate_chat(read_json(f), f.parent.name)
+            out.append({"id": c["id"], "title": c.get("title", "无标题")})
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def restore(cid):
+    with _lock:
+        target = _path(cid)
+        source = CHATS_DIR / ".trash" / cid
+        chat = validate_chat(read_json(source / "record.json"), cid)
+        if target.exists() or image_dir(cid).exists():
+            raise RuntimeError("同名对话已存在，无法恢复")
+        # Restoring never restarts a worker or automatically sends queued messages.
+        for m in chat["messages"]:
+            if m.get("status") == "running":
+                m["status"] = "stopped"
+            for p in m.get("parts", []):
+                if p.get("status") == "running":
+                    p["status"] = "error"
+        for q in chat.pop("queued", []):
+            chat["messages"].append({"role": "user", "text": q.get("text", ""), "images": q.get("images", []), "recovered_queue": True})
+        moved = (source / "images").exists()
+        if moved:
+            (source / "images").rename(image_dir(cid))
+        try:
+            _save(chat)
+        except Exception:
+            if moved:
+                image_dir(cid).rename(source / "images")
+            raise
+        (source / "record.json").unlink()
+        source.rmdir()
+
+
+def purge(cid):
+    _path(cid)
+    with _lock:
+        shutil.rmtree(CHATS_DIR / ".trash" / cid)
 
 
 def is_running(cid):

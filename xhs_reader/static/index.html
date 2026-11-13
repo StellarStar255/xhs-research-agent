@@ -41,6 +41,26 @@ aside { width: var(--sidebar-width, 260px); position: relative; flex-shrink: 0; 
                      background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
 .chat-search input:focus { outline: none; border-color: var(--accent); }
 .chat-search small { display: block; color: var(--muted); font-size: 11px; margin: 3px 2px 0; }
+.history-controls { margin-top: 6px; display: flex; gap: 5px; }
+.history-controls select, .history-controls button, .history-filters select, .history-filters input {
+  min-width: 0; font: inherit; font-size: 12px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 5px; padding: 3px 5px; }
+.history-controls select { flex: 1; }
+.history-filters { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.history-filters summary { cursor: pointer; }
+.history-filters label { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
+.history-filters input, .history-filters select { flex: 1; width: 0; }
+.history-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.history-row span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.history-row button { flex-shrink: 0; }
+.history-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.toast { position: fixed; bottom: 16px; left: 16px; max-width: calc(100vw - 32px); z-index: 40; background: var(--panel);
+         color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; box-shadow: 0 4px 20px #0003; }
+.toast[hidden], .task-progress[hidden] { display: none; }
+.toast button { margin-left: 10px; }
+.task-progress { display: flex; align-items: center; gap: 5px; padding: 7px 16px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+.task-progress #taskElapsed { flex: 1; min-width: 0; }
+.task-progress strong, .task-progress button { flex-shrink: 0; }
+.task-progress strong { color: var(--ink); }
 .chat-search-state { padding: 12px 10px; color: var(--muted); font-size: 13px; }
 .chats { flex: 1; overflow-y: auto; padding: 0 8px; }
 .chat-item { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; }
@@ -49,6 +69,7 @@ aside { width: var(--sidebar-width, 260px); position: relative; flex-shrink: 0; 
 .chat-item .t { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-summary { flex: 1; min-width: 0; }
 .chat-summary .t { display: block; }
+.chat-item.pinned .t::before { content: '置顶 · '; font-size: 11px; color: var(--muted); }
 .chat-snippet { color: var(--muted); font-size: 12px; line-height: 1.5; display: -webkit-box;
                 -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 mark.search-hit { background: #ffd76a; color: #201900; border-radius: 2px; }
@@ -302,6 +323,12 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   <div class="chat-search">
     <input id="chatSearch" type="search" placeholder="搜索历史对话…" aria-label="搜索历史对话" aria-describedby="chatSearchHint" autocomplete="off">
     <small id="chatSearchHint">搜索标题和内容 · 多个关键词用空格分隔</small>
+    <div class="history-controls"><select id="chatView" aria-label="对话分类"><option value="active">当前对话</option><option value="archived">已归档</option><option value="all">全部对话</option></select><button id="historyManage">管理</button></div>
+    <details class="history-filters"><summary>筛选范围与日期</summary>
+      <label>搜索范围<select id="chatScope"><option value="all">标题和全部内容</option><option value="user">仅我的提问</option><option value="assistant">仅助手回答</option></select></label>
+      <label>更新自<input type="date" id="chatSince"></label><label>更新至<input type="date" id="chatUntil"></label>
+      <button id="resetFilters" class="gear">重置筛选</button>
+    </details>
   </div>
   <div class="chats" id="chats"></div>
   <div class="login"><span class="dot" id="dot"></span><span id="loginText">检查登录中…</span>
@@ -315,6 +342,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   <div class="topbar"><button id="menuBtn" aria-label="对话列表">☰</button><span class="tb-title" id="tbTitle">种草调研助手</span>
     <button id="tbNew" aria-label="新对话">＋</button></div>
   <div id="searchNav" class="search-nav" hidden><span id="searchPosition" role="status"></span><button id="searchPrev" aria-label="上一个匹配消息">↑ 上一个</button><button id="searchNext" aria-label="下一个匹配消息">↓ 下一个</button><button id="searchClose" aria-label="关闭对话内搜索定位">×</button></div>
+  <div id="taskProgress" class="task-progress" hidden><strong id="taskStage" role="status"></strong><span id="taskElapsed"></span><button id="taskStop" class="gear">停止</button></div>
   <div id="scroll"><div class="thread" id="thread"></div></div>
   <div class="composer">
     <div class="box">
@@ -333,6 +361,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   <div class="grid" id="grid"></div>
 </div>
 <div class="modal" id="modal"><div class="sheet" id="sheet"></div></div>
+<div class="toast" id="historyToast" role="status" hidden><span id="historyToastText"></span><button id="historyUndo" hidden>撤销删除</button><button id="historyToastClose" aria-label="关闭提示">×</button></div>
 <div class="notice" id="notice"><div class="box2">
   <h2>使用须知</h2>
   <div class="sub2">开始使用前请花一分钟读完。</div>
@@ -351,7 +380,8 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const num = n => n >= 10000 ? (n / 10000).toFixed(1) + '万' : (n ?? 0);
+const num = n => n >= 10000 ? (n / 10000).toFixed(1) + '万' : esc(n ?? 0);
+const safeHref = url => /^https?:\/\//i.test(String(url || '')) ? esc(url) : '#';
 const titleOf = n => n.title || (n.desc || '').split('\n').find(l => l.trim())?.slice(0, 40) || '(无标题)';
 let examplesTimer, examplesRequest = 0, examplesSeen = [], examplesRevision = '';
 function stopExamples() {
@@ -385,21 +415,31 @@ async function loadChats() {
   if (searchComposing) return;
   const request = ++chatListRequest;
   const query = $('#chatSearch').value.trim();
+  const params = new URLSearchParams({q: query, scope: $('#chatScope').value, view: $('#chatView').value,
+    since: $('#chatSince').value, until: $('#chatUntil').value});
   let list;
-  try { list = await api('/api/chats' + (query ? '?q=' + encodeURIComponent(query) : '')); }
+  try { list = await api('/api/chats?' + params); }
   catch (e) {
-    if (request === chatListRequest && !renaming) $('#chats').innerHTML = '<div class="chat-search-state" role="status">加载失败，请重试</div>';
+    if (request === chatListRequest && !renaming) $('#chats').innerHTML = `<div class="chat-search-state" role="status">${esc(e.message || '加载失败，请重试')}</div>`;
     return;
   }
   if (renaming || request !== chatListRequest || query !== $('#chatSearch').value.trim()) return;
   $('#chats').innerHTML = list.map(c => `
-    <div class="chat-item ${c.id === current ? 'active' : ''}" data-id="${esc(c.id)}">
+    <div class="chat-item ${c.id === current ? 'active' : ''} ${c.pinned ? 'pinned' : ''}" data-id="${esc(c.id)}">
       ${c.running ? '<span class="spin"></span>' : ''}<div class="chat-summary"><span class="t" title="${esc(c.title)}">${highlighted(c.title, query)}</span>
       ${c.snippet ? `<div class="chat-snippet">${highlighted(c.snippet, query)}</div>` : ''}</div>
+      <button class="x" data-organize="${esc(c.id)}" data-pinned="${c.pinned}" data-archived="${c.archived}" title="置顶和归档">⋯</button>
       <button class="x" data-ren="${esc(c.id)}" title="重命名">✎</button>
       <button class="x" data-del="${esc(c.id)}" title="删除">×</button>
-    </div>`).join('') || `<div class="chat-search-state" role="status">${query ? '没有找到同时包含这些关键词的对话' : '暂无历史对话'}</div>`;
+    </div>`).join('') || `<div class="chat-search-state" role="status">${query ? '没有找到同时包含这些关键词的对话' : '当前范围暂无对话'}</div>`;
 }
+for (const id of ['chatView', 'chatScope', 'chatSince', 'chatUntil']) $('#' + id).onchange = () => {
+  clearTimeout(chatSearchTimer); clearSearchNavigation(); loadChats();
+};
+$('#resetFilters').onclick = () => {
+  $('#chatView').value = 'active'; $('#chatScope').value = 'all'; $('#chatSince').value = $('#chatUntil').value = '';
+  clearSearchNavigation(); loadChats();
+};
 $('#chatSearch').addEventListener('input', () => {
   clearTimeout(chatSearchTimer);
   clearSearchNavigation();
@@ -451,14 +491,17 @@ function startRename(item) {
 }
 $('#chats').ondblclick = e => { const item = e.target.closest('.chat-item'); if (item && e.target.closest('.t')) startRename(item); };
 $('#chats').onclick = async e => {
+  if (e.target.dataset.organize) return showOrganize(e.target);
   if (e.target.dataset.ren) { e.stopPropagation(); return startRename(e.target.closest('.chat-item')); }
   if (e.target.closest('input.rename')) return;
   const del = e.target.dataset.del;
   if (del) {
     e.stopPropagation();
-    if (!confirm('删除这个对话？')) return;
-    await api('/api/chats/' + del, {method: 'DELETE'});
+    if (!confirm('将这个对话移到回收站？正在运行的回答会停止，可在「管理」中恢复。')) return;
+    try { await api('/api/chats/' + del, {method: 'DELETE'}); }
+    catch (error) { return historyToast(error.message); }
     if (del === current) newChat();
+    historyToast('对话已移到回收站', del);
     return loadChats();
   }
   const item = e.target.closest('.chat-item');
@@ -471,6 +514,96 @@ $('#chats').onclick = async e => {
     }
   }
 };
+
+function historyToast(text, undoId = '') {
+  $('#historyToastText').textContent = text; $('#historyToast').hidden = false;
+  $('#historyUndo').hidden = !undoId;
+  $('#historyUndo').dataset.undoId = undoId;
+  $('#historyUndo').onclick = async () => {
+    try { await api(`/api/trash/${encodeURIComponent(undoId)}/restore`, {method: 'POST'}); historyToast('对话已恢复'); loadChats(); }
+    catch (e) { historyToast(e.message); }
+  };
+}
+$('#historyToastClose').onclick = () => $('#historyToast').hidden = true;
+function showOrganize(button) {
+  const id = button.dataset.organize, pinned = button.dataset.pinned === 'true', archived = button.dataset.archived === 'true';
+  $('#sheet').innerHTML = `<div class="settings"><button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button><h2>整理对话</h2>
+    <div class="history-actions"><button class="btn" id="togglePin">${pinned ? '取消置顶' : '置顶对话'}</button><button class="btn" id="toggleArchive">${archived ? '取消归档' : '归档对话'}</button></div>
+    <p class="note">归档后的对话可在左侧「已归档」中查看和继续使用。</p></div>`;
+  const change = async body => {
+    try { await api(`/api/chats/${encodeURIComponent(id)}/organize`, {method: 'POST', body: JSON.stringify(body)}); $('#modal').classList.remove('show'); loadChats(); }
+    catch (e) { historyToast(e.message); }
+  };
+  $('#togglePin').onclick = () => change({pinned: !pinned});
+  $('#toggleArchive').onclick = () => change({archived: !archived});
+  $('#modal').classList.add('show');
+}
+async function showHistoryManagement() {
+  $('#sheet').innerHTML = `<div class="settings"><button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button><h2>历史记录管理</h2>
+    ${REMOTE ? '' : `<h3>备份与恢复</h3><p class="note">备份聊天、图片、回收站和已保存的笔记。导入会跳过已有记录，不覆盖当前数据。请先等待回答结束。</p>
+    <div class="history-actions"><button class="btn" id="backupExport">备份到 ZIP</button><button class="btn" id="backupImport">导入备份</button><input type="file" id="backupFile" accept=".zip,application/zip" hidden></div><p id="backupResult" class="note" role="status"></p>`}
+    <h3>回收站</h3><p class="note">删除的对话会保留在这里，恢复后不会自动发送排队消息。</p><div id="trashList">正在加载…</div></div>`;
+  $('#modal').classList.add('show');
+  if (!REMOTE) {
+    const result = $('#backupResult'), exportButton = $('#backupExport'), importButton = $('#backupImport'), fileInput = $('#backupFile');
+    const busy = value => { exportButton.disabled = importButton.disabled = value; };
+    exportButton.onclick = async () => {
+      busy(true); result.textContent = '正在生成备份…';
+      try {
+        const save = !!window.pywebview;
+        const r = await fetch('/api/backup/export?save=' + save, {method: 'POST'});
+        if (!r.ok) throw new Error((await r.json()).detail);
+        if (save) {
+          const info = await r.json(); result.textContent = '已保存到「下载」：' + info.name;
+          const reveal = document.createElement('button'); reveal.className = 'btn'; reveal.textContent = '在文件夹中显示';
+          reveal.onclick = () => api('/api/export/reveal', {method: 'POST'}).catch(e => historyToast(e.message)); result.append(' ', reveal);
+        } else {
+          const url = URL.createObjectURL(await r.blob()), a = document.createElement('a');
+          a.href = url; a.download = decodeURIComponent((r.headers.get('Content-Disposition') || '').split("''")[1] || '历史备份.zip');
+          document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
+          result.textContent = '备份已下载';
+        }
+      } catch (e) { result.textContent = e.message; }
+      busy(false);
+    };
+    importButton.onclick = () => fileInput.click();
+    fileInput.onchange = async () => {
+      const file = fileInput.files[0]; if (!file) return;
+      if (file.size > 256 * 1024 * 1024) { result.textContent = '备份文件不能超过 256 MB'; fileInput.value = ''; return; }
+      busy(true); result.textContent = '正在校验并导入…';
+      try {
+        const r = await fetch('/api/backup/import', {method: 'POST', headers: {'Content-Type': 'application/zip'}, body: file});
+        const info = await r.json(); if (!r.ok) throw new Error(info.detail);
+        result.textContent = `已导入 ${info.imported} 个对话、${info.trash} 个回收站记录和 ${info.research} 组笔记，跳过 ${info.skipped} 个已有对话`;
+        $('#historyToast').hidden = true;
+        loadChats(); loadTrash();
+      } catch (e) { result.textContent = e.message; }
+      fileInput.value = ''; busy(false);
+    };
+  }
+  await loadTrash();
+}
+async function loadTrash() {
+  const box = $('#trashList'); if (!box) return;
+  try {
+    const rows = await api('/api/trash');
+    if ($('#trashList') !== box) return;
+    box.innerHTML = rows.map(c => `<div class="history-row"><span>${esc(c.title)}</span><button class="btn" data-restore="${esc(c.id)}">恢复</button><button class="btn" data-purge="${esc(c.id)}">彻底删除</button></div>`).join('') || '<p class="note">回收站为空</p>';
+    box.onclick = async e => {
+      const restore = e.target.dataset.restore, purge = e.target.dataset.purge;
+      if (!restore && !purge) return;
+      if (purge && !confirm('彻底删除这个对话及其附带图片？此操作无法撤销。')) return;
+      e.target.disabled = true;
+      try {
+        await api('/api/trash/' + encodeURIComponent(restore || purge) + (restore ? '/restore' : ''), {method: restore ? 'POST' : 'DELETE'});
+        if ($('#historyUndo').dataset.undoId === (restore || purge)) historyToast(restore ? '对话已恢复' : '对话已彻底删除');
+        await loadTrash(); loadChats();
+      }
+      catch (error) { e.target.disabled = false; historyToast(error.message); }
+    };
+  } catch (e) { if ($('#trashList') === box) box.textContent = e.message; }
+}
+$('#historyManage').onclick = showHistoryManagement;
 
 let activeSearch = '', searchIndex = 0, searchMessages = [];
 function clearSearchNavigation() {
@@ -492,7 +625,8 @@ function refreshSearchNavigation(jump = false) {
     const nodes = [];
     while (walker.nextNode()) {
       const node = walker.currentNode;
-      if (node.parentElement.closest('.bubble, .md') && !node.parentElement.closest('button')) nodes.push(node);
+      const messageRole = message.classList.contains('user') ? 'user' : 'assistant';
+      if (($('#chatScope').value === 'all' || $('#chatScope').value === messageRole) && node.parentElement.closest('.bubble, .md') && !node.parentElement.closest('button')) nodes.push(node);
     }
     let hit = false;
     nodes.forEach(node => {
@@ -630,7 +764,7 @@ function showWebResults(step) {
   if (!step.links?.length) { window.open(search, '_blank', 'noopener'); return; }
   $('#sheet').innerHTML = `${closeBtn}<h2>网页搜索</h2>
     <div class="stats"><span>「${esc(step.query)}」</span><a href="${esc(search)}" target="_blank" rel="noopener">在浏览器里搜索 ↗</a></div>
-    <ol class="weblinks">${step.links.map(l => `<li><a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.title || l.url)}</a>
+    <ol class="weblinks">${step.links.map(l => `<li><a href="${safeHref(l.url)}" target="_blank" rel="noopener">${esc(l.title || l.url)}</a>
       <div class="u">${esc(l.url)}</div></li>`).join('')}</ol>
     <p class="note">这些是搜索返回的网页，助手不一定每个都用了。</p>`;
   $('#modal').classList.add('show');
@@ -673,6 +807,7 @@ function newChat() {
   clearSearchNavigation();
   stopExamples(); examplesSeen = []; examplesRevision = '';
   current = null; lastChat = null; lastJson = ''; running = false; clearTimeout(pollTimer); setUrl(null);
+  updateTaskProgress();
   $('#tbTitle').textContent = '种草调研助手';
   if (loggedIn === false) {
     $('#thread').innerHTML = `<div class="hello"><div class="login-card">
@@ -776,19 +911,38 @@ async function openChat(id, restoring = false) {
   }
   lastChat = chat;
   updateComposer();
+  updateTaskProgress();
   if (switching) loadChats();
   // Keep polling while queued messages wait: the next turn starts right after this one ends.
   if (running || (chat.queued || []).length) pollTimer = setTimeout(() => openChat(id), 1200);
   else if (!switching) loadChats();
 }
 
+function updateTaskProgress() {
+  const chat = lastChat, message = chat?.messages?.[chat.messages.length - 1];
+  const active = chat?.id === current && chat?.running && message?.status === 'running';
+  $('#taskProgress').hidden = !active;
+  if (!active) return;
+  const step = [...(message.parts || [])].reverse().find(p => p.status === 'running');
+  const stages = {search: '正在搜索笔记', read: '正在阅读笔记', open: '正在阅读笔记', images: '正在查看图片', web: '正在联网搜索'};
+  const stage = step ? (stages[step.type] || '正在处理资料') : message.draft ? '正在生成回答' : '等待模型返回';
+  if ($('#taskStage').textContent !== stage) $('#taskStage').textContent = stage;
+  const now = Date.now() / 1000;
+  const elapsed = Math.max(0, Math.floor(now - (message.started || now)));
+  const quiet = Math.max(0, Math.floor(now - (message.last_activity || message.started || now)));
+  $('#taskElapsed').textContent = ` · 已用时 ${elapsed < 60 ? elapsed + ' 秒' : Math.floor(elapsed / 60) + ' 分 ' + elapsed % 60 + ' 秒'}`
+    + (quiet >= 30 ? ` · 最近 ${quiet} 秒没有新内容` : '') + ((chat.queued || []).length ? ` · ${chat.queued.length} 条消息排队中` : '');
+}
+setInterval(updateTaskProgress, 1000);
+$('#taskStop').onclick = () => $('#stop').click();
+
 function renderStep(p) {
   if (p.type === 'search') {
     const icon = p.status === 'running' ? '<span class="spin"></span>' : p.status === 'done' ? '✓' : ['limited', 'login'].includes(p.status) ? '⚠' : '✗';
     const right = p.status === 'running' ? `<span class="prog">${esc(p.progress?.line || '启动浏览器…')}</span>`
-      : p.status === 'done' ? `<button class="view" data-session="${esc(p.session)}">找到 ${p.count ?? ''} 篇 · 查看 →</button>`
+      : p.status === 'done' ? `<button class="view" data-session="${esc(p.session)}">找到 ${esc(p.count ?? '')} 篇 · 查看 →</button>`
       : p.status === 'login' ? `<button class="login-btn" data-login>扫码登录</button>`
-      : p.status === 'limited' ? (p.session && p.count ? `<button class="view" data-session="${esc(p.session)}">已读 ${p.count} 篇 · 查看 →</button>` : `<span class="prog" title="${esc(p.error || '')}">${esc(p.error || '被限流')}</span>`)
+      : p.status === 'limited' ? (p.session && p.count ? `<button class="view" data-session="${esc(p.session)}">已读 ${esc(p.count)} 篇 · 查看 →</button>` : `<span class="prog" title="${esc(p.error || '')}">${esc(p.error || '被限流')}</span>`)
       : `<span class="prog" title="${esc(p.error || '')}">搜索失败</span>`;
     return `<div class="step ${p.status === 'error' ? 'err' : ['limited', 'login'].includes(p.status) ? 'warn' : ''}" title="${esc(p.error || '')}">${icon} 在小红书搜索 <span class="kw">「${esc(p.keyword)}」</span>${right}</div>`;
   }
@@ -804,7 +958,7 @@ function renderStep(p) {
     const icon = p.status === 'running' ? '<span class="spin"></span>' : p.status === 'done' ? '📖' : ['limited', 'login'].includes(p.status) ? '⚠' : '✗';
     const n = (p.notes || []).length;
     const right = p.status === 'running' ? `<span class="prog">${esc(p.progress?.line || '打开笔记…')}</span>`
-      : p.status === 'done' ? `<button class="view" data-session="${esc(p.session)}">读了 ${p.count ?? n} 篇 · 查看 →</button>`
+      : p.status === 'done' ? `<button class="view" data-session="${esc(p.session)}">读了 ${esc(p.count ?? n)} 篇 · 查看 →</button>`
       : p.status === 'login' ? `<button class="login-btn" data-login>扫码登录</button>`
       : `<span class="prog" title="${esc(p.error || '')}">${esc((p.error || '打开失败').slice(0, 40))}</span>`;
     return `<div class="step ${p.status === 'error' ? 'err' : ['limited', 'login'].includes(p.status) ? 'warn' : ''}" title="${esc(p.error || '')}">${icon} 打开 ${n || ''} 篇笔记阅读${right}</div>`;
@@ -813,7 +967,7 @@ function renderStep(p) {
     const icon = p.status === 'running' ? '<span class="spin"></span>' : p.status === 'done' ? '🖼' : '✗';
     const what = p.title ? `「${esc(p.title)}」` : `第 ${esc(p.note)} 篇笔记`;
     const right = p.status === 'running' ? '<span class="prog">下载图片…</span>'
-      : p.status === 'done' ? `<button class="view" data-imgs="${esc(p.session)}|${esc(p.note)}">${p.count} 张 · 查看 →</button>`
+      : p.status === 'done' ? `<button class="view" data-imgs="${esc(p.session)}|${esc(p.note)}">${esc(p.count)} 张 · 查看 →</button>`
       : `<span class="prog" title="${esc(p.error || '')}">${esc((p.error || '没看成').slice(0, 30))}</span>`;
     return `<div class="step ${p.status === 'error' ? 'warn' : ''}">${icon} 查看笔记图片 <span class="kw">${what}</span>${right}</div>`;
   }
@@ -825,7 +979,7 @@ function renderStep(p) {
 }
 
 // Cached input is much cheaper than new input, so show them apart.
-function kTok(n) { return n >= 1000 ? Math.round(n / 1000) + 'k' : String(n); }
+function kTok(n) { return n >= 1000 ? Math.round(n / 1000) + 'k' : esc(n); }
 function usageText(u) {
   const cached = u.cached || 0;
   if (!cached) return ` · ${kTok(u.prompt + u.completion)} tokens`;
@@ -861,7 +1015,7 @@ function renderThread(chat, jump) {
     if (m.role === 'user') {
       const imgs = (m.images || []).map(n => `<img src="/api/chats/${esc(chat.id)}/images/${esc(n)}" data-zoom>`).join('');
       return `<div class="msg user"><div class="col">${imgs ? `<div class="uimgs">${imgs}</div>` : ''}
-        ${m.text ? `<div class="bubble">${esc(m.text)}</div>` : ''}</div></div>`;
+        ${m.text ? `<div class="bubble">${esc(m.text)}</div>` : ''}${m.recovered_queue ? '<div class="qnote">恢复的排队消息 · 尚未发送</div>' : ''}</div></div>`;
     }
     const parts = (m.parts || []).map(p => p.type === 'text' ? `<div class="md">${p.html}</div>` : renderStep(p)).join('');
     const draft = m.draft_html ? `<div class="md caret">${m.draft_html}</div>` : '';
@@ -1092,7 +1246,7 @@ function showNote(n) {
     <h2>${esc(titleOf(n))}</h2>
     <div class="stats"><span>👤 ${esc(n.author || '')}</span><span>${esc(n.time || '')}</span>
       <span>♥ ${num(n.liked)}</span><span>★ ${num(n.collected)}</span><span>💬 ${num(n.comment_count)}</span>
-      <a href="${esc(n.url)}" target="_blank">在小红书打开 ↗</a></div>
+      <a href="${safeHref(n.url)}" target="_blank" rel="noopener">在小红书打开 ↗</a></div>
     ${(n.images || []).length ? `<div class="imgs">${n.images.map(u => `<img src="${esc(u)}" loading="lazy" referrerpolicy="no-referrer">`).join('')}</div>` : ''}
     <div class="desc">${isOpened(n) ? esc(n.desc || '') : '<span style="opacity:.6">这篇只在搜索列表里看到，没有打开阅读。</span>'}</div>
     ${(n.comments || []).length ? '<h3>评论</h3>' + n.comments.map(c => `
@@ -1387,10 +1541,11 @@ $('#menuBtn').onclick = () => document.body.classList.toggle('side-open');
 $('#backdrop').onclick = closeSide;
 $('#tbNew').onclick = () => { closeSide(); newChat(); };
 $('#chats').addEventListener('click', e => {
-  if (e.target.closest('.chat-item') && !e.target.dataset.del && !e.target.dataset.ren && !e.target.closest('input.rename')) closeSide();
+  if (e.target.closest('.chat-item') && !e.target.dataset.del && !e.target.dataset.ren && !e.target.dataset.organize && !e.target.closest('input.rename')) closeSide();
 });
 $('#newChat').addEventListener('click', closeSide);
 $('#gear').addEventListener('click', closeSide);
+$('#historyManage').addEventListener('click', closeSide);
 if (matchMedia('(max-width: 760px)').matches) $('#input').placeholder = '问点什么……';
 
 let REMOTE = false;  // opened from a phone through 手机访问

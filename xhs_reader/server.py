@@ -3,6 +3,8 @@ import re
 import subprocess
 import threading
 import time
+import tempfile
+from datetime import date
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -53,6 +55,8 @@ async def remote_guard(request: Request, call_next):
     if not (remote.key_ok(from_query) or remote.key_ok(request.cookies.get(remote.COOKIE))):
         return HTMLResponse(LOCKED_PAGE, status_code=401)
     path = request.url.path
+    if path.startswith("/api/backup"):
+        return JSONResponse({"detail": "备份和导入只能在电脑上进行"}, status_code=403)
     if path.startswith("/api/mobile") or (request.method != "GET" and path.startswith(REMOTE_DENY_POST)):
         return JSONResponse({"detail": "这个操作只能在电脑上进行"}, status_code=403)
     response = await call_next(request)
@@ -182,8 +186,93 @@ def favicon():
 
 
 @app.get("/api/chats")
-def chats(q: str = ""):
-    return agent.list_chats(q)
+def chats(q: str = "", scope: str = "all", view: str = "active", since: str = "", until: str = ""):
+    if scope not in ("all", "user", "assistant") or view not in ("active", "archived", "all"):
+        raise HTTPException(400, "未知的搜索范围")
+    try:
+        for value in (since, until):
+            if value:
+                date.fromisoformat(value)
+        if since and until and since > until:
+            raise ValueError()
+    except ValueError:
+        raise HTTPException(400, "日期范围不正确")
+    return agent.list_chats(q, scope, view, since, until)
+
+
+@app.get("/api/trash")
+def trash():
+    return agent.list_trash()
+
+
+@app.post("/api/trash/{cid}/restore")
+def restore_chat(cid: str):
+    try:
+        agent.restore(cid)
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(404, "回收站中找不到这个对话")
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True}
+
+
+@app.delete("/api/trash/{cid}")
+def purge_chat(cid: str):
+    try:
+        agent.purge(cid)
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(404, "回收站中找不到这个对话")
+    return {"ok": True}
+
+
+@app.post("/api/backup/export")
+def export_backup(save: bool = False):
+    from . import backup
+    from starlette.background import BackgroundTask
+    tmp = tempfile.TemporaryDirectory(prefix="xhs-backup-")
+    name = "种草调研助手-历史备份-" + time.strftime("%Y%m%d-%H%M%S") + ".zip"
+    dest = Path(tmp.name) / name
+    try:
+        backup.export_to(dest)
+        if save:
+            import shutil
+            folder = Path.home() / "Downloads"
+            folder.mkdir(exist_ok=True)
+            target = folder / name
+            if target.exists():
+                target = folder / (dest.stem + "-" + str(time.time_ns()) + ".zip")
+            shutil.copyfile(dest, target)
+            _last_export["path"] = target
+            tmp.cleanup()
+            return {"saved": str(target), "name": target.name}
+        return FileResponse(dest, filename=name, media_type="application/zip", background=BackgroundTask(tmp.cleanup))
+    except (RuntimeError, ValueError) as e:
+        tmp.cleanup()
+        raise HTTPException(409, str(e))
+    except Exception:
+        tmp.cleanup()
+        raise
+
+
+@app.post("/api/backup/import")
+async def import_backup(request: Request):
+    from . import backup
+    from starlette.concurrency import run_in_threadpool
+    with tempfile.TemporaryDirectory(prefix="xhs-upload-") as tmp:
+        f = Path(tmp) / "backup.zip"
+        total = 0
+        with f.open("wb") as out:
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > backup.MAX_ARCHIVE:
+                    raise HTTPException(413, "备份文件不能超过 256 MB")
+                out.write(chunk)
+        try:
+            return await run_in_threadpool(backup.import_from, f)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+        except (ValueError, TypeError, AttributeError, KeyError, OSError) as e:
+            raise HTTPException(400, "无法导入备份：" + str(e))
 
 
 def _require_notice():
@@ -225,10 +314,10 @@ def send(req: ChatReq):
         raise HTTPException(409, str(e))
 
 
-def _running_progress():
+def _running_progress(sessions):
     """Last log line of the research session currently scraping, if any."""
     for m in store.list_sessions():
-        if m["status"] == "running":
+        if m["status"] == "running" and m["id"] in sessions:
             log = store.read_meta(m["id"]).get("log") or []
             return {"session": m["id"], "line": log[-1] if log else "启动浏览器…"}
     return None
@@ -243,8 +332,9 @@ def chat(cid: str, since: str = "", after: int = 0):
     except (FileNotFoundError, ValueError):
         raise HTTPException(404)
     active = [p for msg in c["messages"] if msg["role"] == "assistant"
-              for p in msg.get("parts", []) if p.get("type") in ("search", "open") and p.get("status") == "running"]
-    progress = _running_progress() if active else None
+              for p in msg.get("parts", []) if p.get("type") in ("search", "open", "read") and p.get("status") == "running"]
+    sessions = {p["session"] for p in active if p.get("session")}
+    progress = _running_progress(sessions) if sessions else None
     c["running"] = agent.is_running(cid)
     c["revision"] = f"{st.st_mtime_ns}-{st.st_size}-{int(c['running'])}-{progress}"
     if since == c["revision"]:
@@ -342,6 +432,20 @@ def reveal_export():
 
 class RenameReq(BaseModel):
     title: str
+
+
+class OrganizeReq(BaseModel):
+    pinned: bool | None = None
+    archived: bool | None = None
+
+
+@app.post("/api/chats/{cid}/organize")
+def organize_chat(cid: str, req: OrganizeReq):
+    try:
+        agent.organize(cid, req.pinned, req.archived)
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(404, "找不到这个对话")
+    return {"ok": True}
 
 
 @app.post("/api/chats/{cid}/rename")

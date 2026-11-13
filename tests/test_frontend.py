@@ -232,5 +232,115 @@ class FrontendTests(IsolatedTest):
                 browser.close()
 
 
+    def test_history_management_backup_filters_and_progress(self):
+        import uvicorn
+        from playwright.sync_api import sync_playwright, expect
+
+        settings.accept_notice()
+        self.chat(title='黄启亮证件', updated='2026-11-13 10:00', messages=[
+            {'role': 'user', 'text': '身份证怎么办？'},
+            {'role': 'assistant', 'status': 'done', 'parts': [{'type': 'text', 'text': '黄启亮请准备材料'}]},
+        ])
+        self.chat('other', title='另一个对话', updated='2026-10-01 10:00', messages=[])
+        self.stack.enter_context(patch.object(server, '_login_status', return_value={'logged_in': True}))
+        sock = socket.socket(); sock.bind(('127.0.0.1', 0)); sock.listen()
+        srv = uvicorn.Server(uvicorn.Config(server.app, log_level='error'))
+        thread = threading.Thread(target=srv.run, kwargs={'sockets': [sock]}, daemon=True)
+        thread.start()
+        def shutdown():
+            srv.should_exit = True; thread.join(5); sock.close()
+        self.addCleanup(shutdown)
+        deadline = time.monotonic() + 5
+        while not srv.started and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertTrue(srv.started)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(channel='chrome', headless=True)
+            try:
+                page = browser.new_page()
+                errors = []
+                page.on('pageerror', lambda e: errors.append(str(e)))
+                page.on('dialog', lambda dialog: dialog.accept())
+                page.goto(f'http://127.0.0.1:{sock.getsockname()[1]}/#c=test-chat')
+                page.wait_for_selector('[data-id="test-chat"]')
+                page.locator('[data-id="test-chat"]').hover()
+                page.locator('[data-organize="test-chat"]').click()
+                page.locator('#togglePin').click()
+                expect(page.locator('#chats .chat-item').first).to_have_attribute('data-id', 'test-chat')
+                self.assertTrue(agent.load('test-chat')['pinned'])
+                page.locator('[data-id="test-chat"]').hover()
+                page.locator('[data-organize="test-chat"]').click()
+                page.locator('#toggleArchive').click()
+                expect(page.locator('[data-id="test-chat"]')).to_have_count(0)
+                page.locator('#chatView').select_option('archived')
+                page.wait_for_selector('[data-id="test-chat"]')
+                page.locator('#chatSearch').fill('身份证 黄启亮')
+                page.wait_for_timeout(300)
+                page.locator('.history-filters summary').click()
+                page.locator('#chatScope').select_option('user')
+                expect(page.locator('#chats .chat-item')).to_have_count(0)
+                page.locator('#chatScope').select_option('all')
+                page.wait_for_selector('[data-id="test-chat"]')
+                page.locator('#chatSince').fill('2026-11-14')
+                page.locator('#chatSince').dispatch_event('change')
+                expect(page.locator('#chats .chat-item')).to_have_count(0)
+                page.locator('#resetFilters').click()
+                page.locator('#chatSearch').fill('')
+                page.locator('#chatView').select_option('all')
+                page.wait_for_selector('[data-id="test-chat"]')
+                page.locator('#historyManage').click()
+                response = page.request.post(f'http://127.0.0.1:{sock.getsockname()[1]}/api/backup/export', headers={'Origin': 'https://other.example'})
+                self.assertEqual(response.status, 403)
+                with page.expect_download() as download:
+                    page.locator('#backupExport').click()
+                archive = self.tmp / 'ui-backup.zip'
+                download.value.save_as(archive)
+                expect(page.locator('#backupResult')).to_have_text('备份已下载')
+                page.locator('#sheet .close').click()
+                page.locator('[data-del="test-chat"]').click(force=True)
+                expect(page.locator('[data-id="test-chat"]')).to_have_count(0)
+                page.locator('#historyUndo').click()
+                page.wait_for_selector('[data-id="test-chat"]')
+                page.locator('[data-del="test-chat"]').click(force=True)
+                page.locator('#historyManage').click()
+                page.locator('[data-restore="test-chat"]').click()
+                page.wait_for_selector('[data-id="test-chat"]')
+                page.locator('#sheet .close').click()
+                page.locator('[data-del="test-chat"]').click(force=True)
+                page.locator('#historyManage').click()
+                page.locator('[data-purge="test-chat"]').click()
+                expect(page.locator('[data-purge="test-chat"]')).to_have_count(0)
+                page.locator('#backupFile').set_input_files(archive)
+                expect(page.locator('#backupResult')).to_contain_text('已导入 1 个对话')
+                expect(page.locator('#backupResult')).to_contain_text('跳过 1 个已有对话')
+                page.wait_for_selector('[data-id="test-chat"]')
+                page.screenshot(path='/private/tmp/xhs-history-management.png')
+                page.locator('#sheet .close').click()
+                page.locator('[data-id="test-chat"]').click()
+                page.wait_for_function("lastChat?.id === 'test-chat'")
+                page.evaluate("""() => {
+                    clearTimeout(pollTimer); lastChat.running = true;
+                    const m = lastChat.messages.at(-1);
+                    m.status = 'running'; m.started = Date.now()/1000-65; m.last_activity = Date.now()/1000-40;
+                    updateTaskProgress();
+                }""")
+                expect(page.locator('#taskStage')).to_have_text('等待模型返回')
+                expect(page.locator('#taskElapsed')).to_contain_text('没有新内容')
+                page.evaluate("lastChat.messages.at(-1).parts.push({type:'read',status:'running'}); updateTaskProgress()")
+                expect(page.locator('#taskStage')).to_have_text('正在阅读笔记')
+                page.evaluate("lastChat.messages.at(-1).parts.pop(); lastChat.messages.at(-1).draft='回答'; updateTaskProgress()")
+                expect(page.locator('#taskStage')).to_have_text('正在生成回答')
+                self.assertIn('&lt;img', page.evaluate("renderStep({type:'search',status:'done',count:'<img src=x onerror=alert(1)>',session:'x'})"))
+                self.assertEqual(page.evaluate("safeHref('javascript:alert(1)')"), '#')
+                page.set_viewport_size({'width': 390, 'height': 844})
+                page.locator('#menuBtn').click()
+                page.wait_for_function("Math.abs(document.querySelector('aside').getBoundingClientRect().left) < 1")
+                self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'), 390)
+                page.screenshot(path='/private/tmp/xhs-history-mobile.png')
+                self.assertFalse(errors, errors)
+            finally:
+                browser.close()
+
+
 if __name__ == '__main__':
     unittest.main()
