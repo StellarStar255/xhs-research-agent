@@ -335,6 +335,114 @@ class FrontendTests(IsolatedTest):
             finally:
                 context.close(); browser.close()
 
+    def test_drafts_recovery_and_storage_management(self):
+        import base64
+        import uvicorn
+        from playwright.sync_api import sync_playwright, expect
+        from xhs_reader import note_cache, store
+
+        settings.accept_notice()
+        png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j2ioAAAAASUVORK5CYII=')
+        self.chat('first', messages=[{'role':'user','text':'原问题'}, {'role':'assistant','status':'running','draft':'保留部分答案','parts':[]}],
+                  queued=[{'text':'完整未发送的问题','images':['q.png']}])
+        agent.image_dir('first').mkdir()
+        (agent.image_dir('first') / 'q.png').write_bytes(png)
+        self.chat('second', title='第二段', messages=[])
+        self.chat('created', title='新建话题', messages=[])
+        agent.recover()
+        self.stack.enter_context(patch.object(server, '_login_status', return_value={'logged_in':True}))
+        sock = socket.socket(); sock.bind(('127.0.0.1', 0)); sock.listen()
+        srv = uvicorn.Server(uvicorn.Config(server.app, log_level='error'))
+        thread = threading.Thread(target=srv.run, kwargs={'sockets':[sock]}, daemon=True); thread.start()
+        def shutdown():
+            srv.should_exit = True; thread.join(5); sock.close()
+        self.addCleanup(shutdown)
+        deadline = time.monotonic()+5
+        while not srv.started and time.monotonic()<deadline:
+            time.sleep(.01)
+        self.assertTrue(srv.started)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(channel='chrome', headless=True)
+            try:
+                page = browser.new_page()
+                page.on('dialog', lambda dialog: dialog.accept())
+                errors = []; page.on('pageerror', lambda e: errors.append(str(e)))
+                page.goto(f'http://127.0.0.1:{sock.getsockname()[1]}/#c=first')
+                page.wait_for_function("activeDraftKey === 'first' && lastChat?.id === 'first'")
+                page.locator('#input').fill('第一段草稿')
+                page.locator('#file').set_input_files({'name':'draft.png','mimeType':'image/png','buffer':png})
+                expect(page.locator('#thumbs .thumb')).to_have_count(1)
+                page.evaluate('draftWrites')
+                page.locator('[data-id="second"]').click()
+                page.wait_for_function("activeDraftKey === 'second' && lastChat?.id === 'second'")
+                expect(page.locator('#input')).to_have_value('')
+                page.locator('#input').fill('第二段草稿')
+                page.locator('[data-id="first"]').click()
+                page.wait_for_function("lastChat?.id === 'first'")
+                expect(page.locator('#input')).to_have_value('第一段草稿')
+                expect(page.locator('#thumbs .thumb')).to_have_count(1)
+                page.reload()
+                page.wait_for_function("lastChat?.id === 'first'")
+                expect(page.locator('#input')).to_have_value('第一段草稿')
+                expect(page.locator('#thumbs .thumb')).to_have_count(1)
+                expect(page.locator('#thread')).to_contain_text('保留部分答案')
+                page.locator('[data-reuse]').click()
+                expect(page.locator('#input')).to_have_value('完整未发送的问题')
+                expect(page.locator('#thumbs .thumb')).to_have_count(1)
+                page.locator('#input').fill('')
+                page.locator('[data-rm]').click()
+                page.locator('[data-continue]').click()
+                expect(page.locator('#input')).to_have_value('请继续回答这个问题：\n原问题')
+                page.evaluate("""() => {
+                    window.originalApi = api;
+                    api = (path, opts={}) => path === '/api/chats' && opts.method === 'POST'
+                      ? new Promise((resolve,reject) => { window.finishSend = resolve; window.failSend = () => reject(new Error('发送失败')); })
+                      : originalApi(path,opts);
+                }""")
+                page.locator('#send').click()
+                page.locator('#input').fill('发送期间的新草稿')
+                page.evaluate('window.failSend()')
+                expect(page.locator('#input')).to_have_value('请继续回答这个问题：\n原问题\n\n发送期间的新草稿')
+                page.evaluate('draftWrites')
+                page.reload()
+                page.wait_for_function("lastChat?.id === 'first'")
+                expect(page.locator('#input')).to_have_value('请继续回答这个问题：\n原问题\n\n发送期间的新草稿')
+                page.evaluate("""() => { window.originalApi=api; api=(path,opts={}) => path==='/api/chats' && opts.method==='POST'
+                  ? new Promise(resolve=>window.finishSend=resolve) : originalApi(path,opts); }""")
+                page.locator('#send').click()
+                page.locator('[data-id="second"]').click()
+                page.wait_for_function("lastChat?.id === 'second'")
+                expect(page.locator('#input')).to_have_value('第二段草稿')
+                page.evaluate("window.finishSend({id:'first',queued:false})")
+                page.wait_for_function('!sendInFlight')
+                self.assertEqual(page.evaluate('current'), 'second')
+                expect(page.locator('#input')).to_have_value('第二段草稿')
+                page.locator('#newChat').click()
+                page.evaluate('draftLoadPromise')
+                page.locator('#input').fill('新建话题已发送')
+                page.locator('#send').click()
+                page.locator('#input').fill('新建话题未发出的下一问')
+                page.evaluate("window.finishSend({id:'created',queued:false})")
+                page.wait_for_function("lastChat?.id === 'created' && !sendInFlight")
+                expect(page.locator('#input')).to_have_value('新建话题未发出的下一问')
+                page.evaluate('draftWrites')
+                page.reload(); page.wait_for_function("lastChat?.id === 'created'")
+                expect(page.locator('#input')).to_have_value('新建话题未发出的下一问')
+                agent.delete('second')
+                sid = store.new_session('保留的笔记'); store.save_notes(sid,[{'id':'n','opened':True,'desc':'正文'}])
+                page.locator('#historyManage').click()
+                page.wait_for_selector('[data-clean="trash"]')
+                page.locator('[data-clean="trash"]').check()
+                page.locator('#storageCleanup').click()
+                expect(page.locator('#storageResult')).to_contain_text('清理完成')
+                self.assertEqual(agent.list_trash(), [])
+                self.assertEqual(len(note_cache.lookup_many(['n'])), 1)
+                self.assertTrue(store.path(sid).exists())
+                self.assertTrue(agent._path('first').exists())
+                self.assertFalse(errors, errors)
+            finally:
+                browser.close()
+
     def test_history_management_backup_filters_and_progress(self):
         import uvicorn
         from playwright.sync_api import sync_playwright, expect

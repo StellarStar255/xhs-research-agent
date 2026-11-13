@@ -526,6 +526,8 @@ def _transcript(chat, limit=6000):
     """Earlier turns as plain text, to seed a fresh session when the old one is gone."""
     lines = []
     for m in chat["messages"][:-2]:  # everything before the turn being started
+        if m.get("recovered_queue"):
+            continue
         if m["role"] == "user":
             lines.append(f"用户：{m.get('text') or '（发送了图片）'}")
         else:
@@ -856,6 +858,8 @@ def recover():
     if not CHATS_DIR.exists():
         return
     for f in CHATS_DIR.glob("*.json"):
+        if is_running(f.stem):
+            continue
         try:
             chat = load(f.stem)
         except ValueError:
@@ -863,11 +867,36 @@ def recover():
             continue
         except OSError:
             continue
-        msg = chat["messages"][-1] if chat["messages"] else {}
-        if msg.get("status") == "running":
+        changed = interrupted = False
+        partials = []
+        for msg in chat["messages"]:
+            if msg.get("status") != "running":
+                continue
             msg["status"] = "error"
-            msg["error"] = "服务重启，本轮被中断"
-            lost = [q.get("text", "") for q in chat.pop("queued", None) or []]
-            if lost:
-                msg["error"] += "；排队中没发出的消息：" + " / ".join(t[:40] for t in lost if t)
+            msg["error_kind"] = "interrupted"
+            msg["error"] = "应用退出或服务重启，本轮回答中断；已保留收到的内容，可以继续提问。"
+            if msg.get("draft"):
+                msg.setdefault("parts", []).append({"type": "text", "text": msg["draft"]})
+                msg["draft"] = ""
+            for part in msg.get("parts", []):
+                if part.get("status") == "running":
+                    part.update(status="error", error="任务中断")
+            msg["elapsed"] = max(0, round(msg.get("last_activity", msg.get("started", 0)) - msg.get("started", 0)))
+            partials.extend(p.get("text", "") for p in msg.get("parts", []) if p["type"] == "text")
+            changed = True
+            interrupted = True
+        if interrupted:
+            chat.pop("codex_thread", None)
+            chat.pop("claude_session", None)
+            history = chat.get("llm_history")
+            if isinstance(history, list):
+                partial = "\n".join(partials)
+                if partial and (not history or history[-1].get("content") != partial):
+                    history.append({"role": "assistant", "content": "（上次中断前已收到的回答）\n" + partial})
+        queue = chat.pop("queued", [])
+        if queue:
+            for q in queue:
+                chat["messages"].append({"role": "user", "text": q.get("text", ""), "images": q.get("images", []), "recovered_queue": True})
+            changed = True
+        if changed:
             _save(chat)

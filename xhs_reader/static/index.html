@@ -61,6 +61,7 @@ aside { width: var(--sidebar-width, 260px); position: relative; flex-shrink: 0; 
 .task-progress #taskElapsed { flex: 1; min-width: 0; }
 .task-progress strong, .task-progress button { flex-shrink: 0; }
 .task-progress strong { color: var(--ink); }
+.draft-state { color: var(--muted); font-size: 11px; min-height: 16px; margin-top: 3px; }
 .chat-search-state { padding: 12px 10px; color: var(--muted); font-size: 13px; }
 .chats { flex: 1; overflow-y: auto; padding: 0 8px; }
 .chat-item { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; }
@@ -358,6 +359,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
       <button class="stopbtn" id="stop" hidden title="停止当前回答（排队的消息会接着发送）">■ 停止</button>
       <button class="send" id="send" disabled>发送</button>
     </div>
+    <div id="draftStatus" class="draft-state" role="status"></div>
     <div class="hint">助手会放慢速度浏览小红书，减少对平台的访问压力，先看搜索列表再挑几篇打开，每篇约 10 秒 · 回答过程中也可以继续发送（会排队） · 支持粘贴 / 拖入图片 · Enter 发送，Shift+Enter 换行</div>
   </div>
 </main>
@@ -393,7 +395,86 @@ function stopExamples() {
   clearTimeout(examplesTimer);
   examplesRequest++;
 }
-let current = null, lastJson = '', pollTimer = null, running = false, chatRequest = 0;
+let current = null, lastJson = '', pollTimer = null, running = false, chatRequest = 0, composerRoute = 0;
+
+// Text has a synchronous fallback for abrupt closes; IndexedDB also keeps image drafts.
+let activeDraftKey, draftNavigation = 0, draftEdits = 0, draftLoadingTicket = 0, draftLoadingEdits = 0, draftLoadPromise = Promise.resolve(), draftWrites = Promise.resolve(), sendInFlight = false;
+const draftMemory = new Map();
+const draftTimers = new Map();
+const draftDB = new Promise(resolve => {
+  try {
+    const request = indexedDB.open('xhs-composer-drafts', 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('drafts');
+    request.onsuccess = () => { request.result.onversionchange = () => request.result.close(); resolve(request.result); };
+    request.onerror = request.onblocked = () => resolve(null);
+  } catch { resolve(null); }
+});
+function draftLocal(key) { try { return JSON.parse(localStorage.getItem('xhs-draft:' + key) || 'null'); } catch { return null; } }
+const imageSignature = images => images.map(p => p.data.length + ':' + p.data.slice(0, 24) + p.data.slice(-24)).join('|');
+async function readDraft(key) {
+  if (draftMemory.has(key)) return draftMemory.get(key);
+  const db = await draftDB;
+  let value = null;
+  if (db) value = await new Promise(resolve => {
+    try { const r = db.transaction('drafts').objectStore('drafts').get(key); r.onsuccess = () => resolve(r.result || null); r.onerror = () => resolve(null); }
+    catch { resolve(null); }
+  });
+  const local = draftLocal(key);
+  if (local && (!value || local.at > value.at)) value = {...local, images: value && local.imageSignature === imageSignature(value.images || []) ? value.images : []};
+  return value || {text: '', images: [], at: 0};
+}
+function composerSnapshot() { return {text: $('#input').value, images: pending.map(({media_type, data}) => ({media_type, data})), at: Date.now()}; }
+function writeDraft(key, value, defer = false) {
+  clearTimeout(draftTimers.get(key)); draftTimers.delete(key);
+  value = {...value, at: Math.max(value.at || Date.now(), (draftMemory.get(key)?.at || 0) + 1, (draftLocal(key)?.at || 0) + 1)};
+  draftMemory.delete(key); draftMemory.set(key, value);
+  while (draftMemory.size > 8) draftMemory.delete(draftMemory.keys().next().value);
+  let textSaved = false;
+  try { localStorage.setItem('xhs-draft:' + key, JSON.stringify({text: value.text, at: value.at, imageSignature: imageSignature(value.images)})); textSaved = true; } catch {}
+  if (defer) {
+    // Avoid repeatedly cloning multi-megabyte images for every keystroke.
+    draftTimers.set(key, setTimeout(() => writeDraft(key, value), 250));
+    $('#draftStatus').textContent = textSaved ? '草稿文字已自动保存' : '正在保存草稿…';
+    return draftWrites;
+  }
+  const ticket = draftNavigation, edits = draftEdits;
+  draftWrites = draftWrites.catch(() => {}).then(async () => {
+    const db = await draftDB;
+    const saved = db && await new Promise(resolve => {
+      try { const tx = db.transaction('drafts', 'readwrite'); tx.objectStore('drafts').put(value, key); tx.oncomplete = () => resolve(true); tx.onerror = tx.onabort = () => resolve(false); }
+      catch { resolve(false); }
+    });
+    if (key === activeDraftKey && ticket === draftNavigation && edits === draftEdits) $('#draftStatus').textContent = !value.text && !value.images.length ? ''
+      : saved ? '草稿已自动保存到本浏览器' : textSaved ? (value.images.length ? '草稿文字已保存，图片暂未保存' : '草稿文字已自动保存') : '草稿暂时仅保留在本窗口';
+  });
+  return draftWrites;
+}
+function saveComposerDraft(defer = false) {
+  if (activeDraftKey !== undefined && !(draftLoadingTicket === draftNavigation && draftLoadingEdits === draftEdits)) return writeDraft(activeDraftKey, composerSnapshot(), defer === true);
+}
+function activateDraft(id) {
+  const key = id || '__new';
+  if (key === activeDraftKey) return draftLoadPromise;
+  saveComposerDraft(); activeDraftKey = key;
+  const ticket = ++draftNavigation, edits = ++draftEdits;
+  draftLoadingTicket = ticket; draftLoadingEdits = edits;
+  $('#input').value = draftMemory.get(key)?.text || draftLocal(key)?.text || ''; pending = [];
+  $('#draftStatus').textContent = ''; renderThumbs(); autosize();
+  draftLoadPromise = readDraft(key).then(value => {
+    if (ticket !== draftNavigation) return;
+    if (edits === draftEdits) $('#input').value = typeof value.text === 'string' ? value.text : '';
+    const restored = (Array.isArray(value.images) ? value.images : []).filter(p => p && /^image\/(png|jpeg|webp|gif)$/.test(p.media_type) && typeof p.data === 'string' && /^[A-Za-z0-9+/=]*$/.test(p.data))
+      .map(p => ({...p, url: `data:${p.media_type};base64,${p.data}`}));
+    pending = edits === draftEdits ? restored : [...restored, ...pending].filter((p, i, all) => all.findIndex(q => q.data === p.data && q.media_type === p.media_type) === i);
+    renderThumbs(); autosize();
+    if ($('#input').value || pending.length) $('#draftStatus').textContent = '已恢复本浏览器的输入草稿';
+  }).finally(() => {
+    if (ticket === draftNavigation) { draftLoadingTicket = 0; if (edits !== draftEdits) saveComposerDraft(); }
+  });
+  return draftLoadPromise;
+}
+window.addEventListener('pagehide', saveComposerDraft);
+document.addEventListener('visibilitychange', () => { if (document.hidden) saveComposerDraft(); });
 
 async function api(path, opts = {}) {
   const r = await fetch(path, {headers: {'Content-Type': 'application/json'}, ...opts});
@@ -613,7 +694,8 @@ async function showHistoryManagement() {
   $('#sheet').innerHTML = `<div class="settings"><button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button><h2>历史记录管理</h2>
     ${REMOTE ? '' : `<h3>备份与恢复</h3><p class="note">备份聊天、图片、回收站和已保存的笔记。导入会跳过已有记录，不覆盖当前数据。请先等待回答结束。</p>
     <div class="history-actions"><button class="btn" id="backupExport">备份到 ZIP</button><button class="btn" id="backupImport">导入备份</button><input type="file" id="backupFile" accept=".zip,application/zip" hidden></div><div id="backupPreview" hidden></div><p id="backupResult" class="note" role="status"></p>`}
-    <h3>回收站</h3><p class="note">删除的对话会保留在这里，恢复后不会自动发送排队消息。</p><div id="trashList">正在加载…</div></div>`;
+    <h3>回收站</h3><p class="note">删除的对话会保留在这里，恢复后不会自动发送排队消息。</p><div id="trashList">正在加载…</div>
+    ${REMOTE ? '' : '<h3>磁盘占用</h3><div id="storageUsage">正在统计…</div>'}</div>`;
   $('#modal').classList.add('show');
   if (!REMOTE) {
     const result = $('#backupResult'), exportButton = $('#backupExport'), importButton = $('#backupImport'), fileInput = $('#backupFile'), previewBox = $('#backupPreview');
@@ -669,6 +751,31 @@ async function showHistoryManagement() {
     };
   }
   await loadTrash();
+  if (!REMOTE) await loadStorageUsage();
+}
+const formatBytes = size => size >= 1024 ** 3 ? (size / 1024 ** 3).toFixed(2) + ' GB' : size >= 1024 ** 2 ? (size / 1024 ** 2).toFixed(1) + ' MB' : (size / 1024).toFixed(1) + ' KB';
+async function loadStorageUsage() {
+  const box = $('#storageUsage'); if (!box) return;
+  try {
+    const info = await api('/api/storage'); if ($('#storageUsage') !== box) return;
+    const labels = {chats:'聊天记录', chat_images:'聊天附带图片', research:'已保存的笔记和图片', trash:'回收站', note_cache:'笔记检索缓存'};
+    box.innerHTML = `<p class="note">以上数据共 ${formatBytes(info.total_bytes)}。草稿保存在当前浏览器。应用设置和登录数据不在此统计范围内。</p>`
+      + Object.entries(info.categories).map(([key, value]) => `<div class="history-row"><span>${labels[key]} · ${value.files} 个文件</span><b>${formatBytes(value.bytes)}</b>
+        ${['trash','note_cache'].includes(key) ? `<label><input type="checkbox" data-clean="${key}">清理</label>` : ''}</div>`).join('')
+      + '<p class="note">清理回收站会永久删除其中的对话和图片；清理检索缓存会保留已保存的笔记，后续读取时可重新缓存。</p><div class="history-actions"><button class="btn" id="storageRefresh">刷新统计</button><button class="btn" id="storageCleanup" disabled>清理所选项</button></div><p id="storageResult" role="status" class="note"></p>';
+    box.onchange = () => $('#storageCleanup').disabled = !box.querySelector('[data-clean]:checked');
+    $('#storageRefresh').onclick = loadStorageUsage;
+    $('#storageCleanup').onclick = async () => {
+      const categories = [...box.querySelectorAll('[data-clean]:checked')].map(el => el.dataset.clean);
+      if (!categories.length || !confirm('确认清理：' + categories.map(key => labels[key]).join('、') + '？回收站中的内容删除后无法撤销。')) return;
+      $('#storageCleanup').disabled = true;
+      try {
+        const result = await api('/api/storage/cleanup', {method:'POST', body:JSON.stringify({categories})});
+        await loadStorageUsage(); if ($('#storageResult')) $('#storageResult').textContent = '清理完成，释放 ' + formatBytes(result.freed_bytes);
+        if (categories.includes('trash')) { $('#historyToast').hidden = true; loadTrash(); broadcastHistoryChange(); }
+      } catch (e) { if ($('#storageResult')) $('#storageResult').textContent = e.message; if ($('#storageCleanup')) $('#storageCleanup').disabled = false; }
+    };
+  } catch (e) { if ($('#storageUsage') === box) box.textContent = e.message; }
 }
 async function loadTrash() {
   const box = $('#trashList'); if (!box) return;
@@ -891,6 +998,7 @@ $('#scroll').addEventListener('scroll', () => { clearTimeout(scrollSaveTimer); s
 window.addEventListener('beforeunload', saveScroll);
 
 function newChat() {
+  composerRoute++; activateDraft(null);
   chatRequest++;
   threadMarkup = []; threadNodes = [];
   clearSearchNavigation();
@@ -971,10 +1079,14 @@ async function openChat(id, restoring = false) {
   const request = ++chatRequest;
   stopExamples();
   const switching = id !== current;
+  if (switching) composerRoute++;
   if (switching) { clearSearchNavigation(); saveScroll(); lastJson = ''; }
   current = id;
+  const draftReady = activateDraft(id);
   setUrl(id);
   clearTimeout(pollTimer);
+  await draftReady;
+  if (current !== id || request !== chatRequest) return;
   let chat;
   const previous = !switching && lastChat?.id === id ? lastChat : null;
   const query = previous?.revision ? '?since=' + encodeURIComponent(previous.revision) + '&after=' + Math.max(0, previous.messages.length - 1) : '';
@@ -1108,13 +1220,13 @@ function renderThread(chat, jump) {
     if (m.role === 'user') {
       const imgs = (m.images || []).map(n => `<img src="/api/chats/${esc(chat.id)}/images/${esc(n)}" data-zoom>`).join('');
       return `<div class="msg user"><div class="col">${imgs ? `<div class="uimgs">${imgs}</div>` : ''}
-        ${m.text ? `<div class="bubble">${esc(m.text)}</div>` : ''}${m.recovered_queue ? '<div class="qnote">恢复的排队消息 · 尚未发送</div>' : ''}</div></div>`;
+        ${m.text ? `<div class="bubble">${esc(m.text)}</div>` : ''}${m.recovered_queue ? `<div class="qnote">恢复的排队消息 · 尚未发送 <button data-reuse="${i}">恢复到输入框</button></div>` : ''}</div></div>`;
     }
     const parts = (m.parts || []).map(p => p.type === 'text' ? `<div class="md">${p.html}</div>` : renderStep(p)).join('');
     const draft = m.draft_html ? `<div class="md caret">${m.draft_html}</div>` : '';
     const busy = m.status === 'running' && !draft && !(m.parts || []).some(p => p.status === 'running')
       ? '<div class="thinking"><span class="spin"></span>思考中…</div>' : '';
-    const err = m.status === 'error' ? `<div class="error">出错了：${esc(m.error || '')}</div>`
+    const err = m.status === 'error' ? `<div class="error">${esc(m.error || '回答出错')}${m.error_kind === 'interrupted' ? `<button class="btn" data-continue="${i}">继续这次回答</button>` : ''}</div>`
       : m.status === 'stopped' ? '<div class="meta-line">已停止</div>' : '';
     const tokens = m.usage && (m.usage.prompt + m.usage.completion) ? usageText(m.usage) : '';
     const meta = m.status === 'done' && m.elapsed ? `<div class="meta-line">用时 ${m.elapsed < 60 ? m.elapsed + ' 秒' : Math.round(m.elapsed / 60) + ' 分钟'}${m.model ? ' · ' + esc(m.model) : ''}${tokens}</div>` : '';
@@ -1128,6 +1240,23 @@ function renderThread(chat, jump) {
       <div class="qnote">排队中 · 当前回答结束后自动发送<button data-unqueue="${esc(q.id)}">取消</button></div></div></div>`;
   }));
   reconcileThread(threadHtml);
+  document.querySelectorAll('[data-reuse]').forEach(b => b.onclick = async () => {
+    const cid = current, route = composerRoute;
+    try {
+      const value = await api(`/api/chats/${encodeURIComponent(cid)}/messages/${b.dataset.reuse}/reuse`);
+      if (current !== cid || route !== composerRoute) return;
+      if (($('#input').value || pending.length) && !confirm('用恢复的消息替换当前输入草稿？')) return;
+      $('#input').value = value.text; pending = value.images.map(p => ({...p, url: `data:${p.media_type};base64,${p.data}`}));
+      draftEdits++; renderThumbs(); autosize(); saveComposerDraft(); $('#input').focus();
+      if (value.missing_images) historyToast('部分原图片已不存在，已恢复可用内容');
+    } catch (e) { historyToast(e.message); }
+  });
+  document.querySelectorAll('[data-continue]').forEach(b => b.onclick = () => {
+    if ($('#input').value || pending.length) return historyToast('请先发送或保存当前草稿，再继续中断的回答');
+    const question = lastChat.messages.slice(0, +b.dataset.continue).reverse().find(m => m.role === 'user' && !m.recovered_queue);
+    $('#input').value = question?.text ? '请继续回答这个问题：\n' + question.text : '请继续上次被中断的回答。';
+    draftEdits++; autosize(); saveComposerDraft(); $('#input').focus();
+  });
   document.querySelectorAll('[data-unqueue]').forEach(b => b.onclick = async () => {
     try { await api(`/api/chats/${encodeURIComponent(chat.id)}/queue/${b.dataset.unqueue}`, {method: 'DELETE'}); } catch {}
     openChat(chat.id);
@@ -1220,7 +1349,7 @@ function showExport(index) {
 
 function updateComposer() {
   // While an answer is running you can keep sending: messages queue up (see agent.submit).
-  $('#send').disabled = !$('#input').value.trim() && !pending.length;
+  $('#send').disabled = sendInFlight || (!$('#input').value.trim() && !pending.length);
   $('#send').textContent = running ? '排队发送' : '发送';
   $('#stop').hidden = !running;
 }
@@ -1252,17 +1381,22 @@ function readImage(file) {
   });
 }
 async function addFiles(files) {
+  const key = activeDraftKey;
   for (const f of files) {
     if (!f.type.startsWith('image/')) continue;
     if (pending.length >= 6) { alert('一次最多 6 张图片'); break; }
-    try { pending.push(await readImage(f)); } catch { alert('无法读取图片：' + f.name); }
+    try {
+      const image = await readImage(f);
+      if (key === activeDraftKey) { pending.push(image); draftEdits++; saveComposerDraft(); }
+      else { const value = await readDraft(key); await writeDraft(key, {...value, images: [...value.images, image], at: Date.now()}); }
+    } catch { alert('无法读取图片：' + f.name); }
   }
   renderThumbs();
 }
 function renderThumbs() {
   $('#thumbs').innerHTML = pending.map((p, i) =>
     `<div class="thumb" style="background-image:url('${p.url}')"><button data-rm="${i}" title="移除">×</button></div>`).join('');
-  document.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { pending.splice(+b.dataset.rm, 1); renderThumbs(); });
+  document.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { pending.splice(+b.dataset.rm, 1); draftEdits++; renderThumbs(); saveComposerDraft(); });
   updateComposer();
 }
 $('#attach').onclick = () => $('#file').click();
@@ -1281,25 +1415,35 @@ document.addEventListener('drop', e => {
 });
 
 async function send() {
+  if (sendInFlight) return;
   const text = $('#input').value.trim();
   if (!text && !pending.length) return;
+  if (pending.length > 6) return historyToast('一次最多发送 6 张图片，请先移除部分图片');
+  const sourceId = current, sourceKey = activeDraftKey, route = composerRoute;
   const images = pending;
-  $('#input').value = ''; pending = []; renderThumbs(); autosize();
+  $('#input').value = ''; pending = []; draftEdits++; saveComposerDraft(); sendInFlight = true; renderThumbs(); autosize();
   try {
     const {id, queued} = await api('/api/chats', {method: 'POST', body: JSON.stringify({
-      message: text, chat_id: current, images: images.map(({media_type, data}) => ({media_type, data}))})});
+      message: text, chat_id: sourceId, images: images.map(({media_type, data}) => ({media_type, data}))})});
+    if (sourceKey !== activeDraftKey || route !== composerRoute) return;
+    if (!sourceId) {
+      const next = composerSnapshot(); writeDraft(id, next); writeDraft(sourceKey, {text: '', images: [], at: Date.now()}); activeDraftKey = id;
+    }
     if (!queued) current = null;  // force a full render + jump to bottom
     await openChat(id);
     if (queued) $('#scroll').scrollTop = $('#scroll').scrollHeight;
   } catch (e) {
-    $('#input').value = text; pending = images; renderThumbs();
+    const latest = sourceKey === activeDraftKey ? composerSnapshot() : await readDraft(sourceKey);
+    const restored = {text: [text, latest.text].filter(Boolean).join('\n\n'), images: [...images, ...latest.images].filter((p, i, all) => all.findIndex(q => q.data === p.data && q.media_type === p.media_type) === i), at: Date.now()};
+    await writeDraft(sourceKey, restored);
+    if (sourceKey === activeDraftKey) { $('#input').value = restored.text; pending = restored.images.map(p => ({...p, url: `data:${p.media_type};base64,${p.data}`})); draftEdits++; renderThumbs(); autosize(); }
     if (e.message.includes('设置')) openSettings(e.message); else alert(e.message);
-  }
+  } finally { sendInFlight = false; updateComposer(); }
 }
 $('#send').onclick = () => send();
 $('#stop').onclick = async () => { if (current) await api(`/api/chats/${current}/stop`, {method: 'POST'}).catch(() => {}); };
 function autosize() { const t = $('#input'); t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; updateComposer(); }
-$('#input').oninput = autosize;
+$('#input').oninput = () => { draftEdits++; autosize(); saveComposerDraft(true); };
 $('#input').onkeydown = e => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !TOUCH) { e.preventDefault(); send(); }
 };

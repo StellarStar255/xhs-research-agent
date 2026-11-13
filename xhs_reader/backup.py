@@ -149,7 +149,7 @@ def import_from(source, preview=False):
             c["llm_history"] = [
                 {"role": m["role"], "content": m.get("text", "") if m["role"] == "user" else
                  "\n".join([*(p.get("text", "") for p in m.get("parts", []) if p["type"] == "text"), m.get("draft", "")])}
-                for m in c["messages"]]
+                for m in c["messages"] if not m.get("recovered_queue")]
             f.write_text(json.dumps(c, ensure_ascii=False), encoding="utf-8")
         for f in (stage / "research").glob("*/*.json"):
             value = json.loads(f.read_text(encoding="utf-8"))

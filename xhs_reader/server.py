@@ -4,6 +4,7 @@ import subprocess
 import threading
 import time
 import tempfile
+import sqlite3
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
@@ -56,8 +57,8 @@ async def remote_guard(request: Request, call_next):
     if not (remote.key_ok(from_query) or remote.key_ok(request.cookies.get(remote.COOKIE))):
         return HTMLResponse(LOCKED_PAGE, status_code=401)
     path = request.url.path
-    if path.startswith("/api/backup"):
-        return JSONResponse({"detail": "备份和导入只能在电脑上进行"}, status_code=403)
+    if path.startswith(("/api/backup", "/api/storage")):
+        return JSONResponse({"detail": "备份、导入和磁盘管理只能在电脑上进行"}, status_code=403)
     if path.startswith("/api/mobile") or (request.method != "GET" and path.startswith(REMOTE_DENY_POST)):
         return JSONResponse({"detail": "这个操作只能在电脑上进行"}, status_code=403)
     response = await call_next(request)
@@ -204,6 +205,27 @@ def chats(q: str = "", scope: str = "all", view: str = "active", since: str = ""
 @app.get("/api/trash")
 def trash():
     return agent.list_trash()
+
+
+@app.get("/api/storage")
+def storage_usage():
+    from . import storage
+    return storage.usage()
+
+
+class CleanupReq(BaseModel):
+    categories: list[str]
+
+
+@app.post("/api/storage/cleanup")
+def cleanup_storage(req: CleanupReq):
+    from . import storage
+    try:
+        return storage.cleanup(req.categories)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except (OSError, RuntimeError, sqlite3.Error) as e:
+        raise HTTPException(409, str(e))
 
 
 @app.post("/api/trash/{cid}/restore")
@@ -482,6 +504,26 @@ def unqueue(cid: str, qid: str):
 def stop(cid: str):
     agent.stop(cid)
     return {"ok": True}
+
+
+@app.get("/api/chats/{cid}/messages/{index}/reuse")
+def reuse_message(cid: str, index: int):
+    try:
+        chat = agent.load(cid)
+        if index < 0 or index >= len(chat["messages"]):
+            raise ValueError()
+        message = chat["messages"][index]
+        if message["role"] != "user":
+            raise ValueError()
+        names = message.get("images", [])
+        if any(not isinstance(n, str) or '/' in n or '\\' in n or '..' in n for n in names):
+            raise ValueError()
+        if len(names) > 6 or any((agent.image_dir(cid) / n).exists() and (agent.image_dir(cid) / n).stat().st_size > 5_250_000 for n in names):
+            raise HTTPException(413, "原消息图片过多或过大，请复制文字后重新选择图片")
+        images = agent._user_images(cid, names)
+        return {"text": message.get("text", ""), "images": images, "missing_images": len(names) - len(images)}
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(404, "找不到原消息或附件")
 
 
 @app.delete("/api/chats/{cid}")
