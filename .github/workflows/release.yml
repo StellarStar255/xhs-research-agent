@@ -153,8 +153,6 @@ jobs:
             Get-Content "$env:XHS_DATA_DIR\app.log"; throw "tray icon failed to start" }
           Invoke-RestMethod -Method Post http://localhost:8766/api/shutdown | Out-Null
           if (-not $p.WaitForExit(15000)) { throw "GUI with window did not exit after shutdown" }
-      - name: Native WebView workflows against frozen server
-        run: python packaging/check_native.py --binary "dist/XHS Research Agent/XHS Research Agent.exe"
       - name: Build installer
         shell: pwsh
         run: |
@@ -163,6 +161,19 @@ jobs:
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
           & $iscc "/DAppVersion=$env:VERSION" packaging\windows_installer.iss
           if ($LASTEXITCODE) { throw "iscc failed" }
+      - name: Install and validate native workflows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = (Get-Item "dist/XHS-Research-Agent-$($env:VERSION)-windows-x64-setup.exe").FullName
+          $target = Join-Path $env:RUNNER_TEMP "installed-xhs"
+          $p = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',('/DIR="{0}"' -f $target)) -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Installer failed: $($p.ExitCode)" }
+          $installed = Join-Path $target "XHS Research Agent.exe"
+          if (-not (Test-Path $installed)) { throw "Installed executable missing" }
+          if ((Get-FileHash $installed).Hash -ne (Get-FileHash "dist/XHS Research Agent/XHS Research Agent.exe").Hash) { throw "Installed executable differs from build" }
+          python packaging/check_native.py --binary "$installed"
+          if ($LASTEXITCODE) { throw "Installed native workflow validation failed" }
       - uses: actions/upload-artifact@v4
         with:
           name: windows
