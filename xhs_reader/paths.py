@@ -28,6 +28,12 @@ def _data_dir():
 DATA_DIR = _data_dir()
 
 
+def downloads_dir():
+    """Default user Downloads, with an isolated destination for native validation."""
+    override = os.environ.get('XHS_EXPORT_DIR')
+    return Path(override).expanduser() if override else Path.home() / 'Downloads'
+
+
 def use_system_certificates():
     """Verify HTTPS against the OS trust store (macOS Keychain / Windows cert store).
 

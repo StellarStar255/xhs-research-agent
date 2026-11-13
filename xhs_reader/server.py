@@ -242,7 +242,7 @@ async def export_drafts(request: Request):
     except (ValueError, AttributeError):
         raise HTTPException(400, '草稿格式不正确')
     def save():
-        folder = Path.home() / 'Downloads'; folder.mkdir(exist_ok=True)
+        folder = paths.downloads_dir(); folder.mkdir(parents=True, exist_ok=True)
         name = '种草调研助手-草稿-' + time.strftime('%Y%m%d-%H%M%S') + '-' + str(time.time_ns() % 1000000) + '.json'
         path = folder / name
         path.write_bytes(json.dumps(value, ensure_ascii=False, indent=2).encode('utf-8'))
@@ -297,8 +297,8 @@ def export_backup(save: bool = False):
         backup.export_to(dest)
         if save:
             import shutil
-            folder = Path.home() / "Downloads"
-            folder.mkdir(exist_ok=True)
+            folder = paths.downloads_dir()
+            folder.mkdir(parents=True, exist_ok=True)
             target = folder / name
             if target.exists():
                 target = folder / (dest.stem + "-" + str(time.time_ns()) + ".zip")
@@ -469,8 +469,8 @@ def export_chat(cid: str, req: ExportReq, request: Request):
         except Exception as e:
             raise HTTPException(500, f"生成{'PDF' if req.format == 'pdf' else '图片'}失败：{e}")
     if req.save and not remote.is_remote(request.scope):
-        folder = Path.home() / "Downloads"
-        folder.mkdir(exist_ok=True)
+        folder = paths.downloads_dir()
+        folder.mkdir(parents=True, exist_ok=True)
         f, n = folder / f"{name}.{ext}", 1
         while f.exists():
             n += 1

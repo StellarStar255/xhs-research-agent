@@ -30,6 +30,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='xhs-native-', ignore_cleanup_errors=True) as folder:
         data = Path(folder)
         os.environ['XHS_DATA_DIR'] = str(data)
+        os.environ['XHS_EXPORT_DIR'] = str(data / 'exports')
         os.environ['XHS_UPDATE_API'] = 'http://127.0.0.1:1/no-update'
         from xhs_reader import agent, app, server, settings
         import webview
@@ -73,7 +74,10 @@ def main():
                     finished = threading.Event(); value = []
                     def done(response): value.append(response); finished.set()
                     window.evaluate_js('(async()=>{try{'+code+'}catch(e){return {ok:false,error:String(e.name)+": "+String(e.message)+"\\n"+String(e.stack||"")}}})()',callback=done)
-                    if not finished.wait(30): raise RuntimeError('native JavaScript timed out in phase '+str(phase))
+                    if not finished.wait(30):
+                        try: state = window.evaluate_js("({step:window.__nativeStep,bridge:typeof window.pywebview,draft:typeof activeDraftKey==='undefined'?'not-ready':activeDraftKey})")
+                        except Exception as e: state = str(e)
+                        raise RuntimeError('native JavaScript timed out in phase '+str(phase)+': '+json.dumps(state,ensure_ascii=True))
                     if not value or not isinstance(value[0],dict) or not value[0].get('ok'):
                         raise AssertionError(str(value))
                     return value[0]
@@ -81,7 +85,7 @@ def main():
                     deadline = time.monotonic()+30
                     while time.monotonic()<deadline:
                         try:
-                            if window.evaluate_js("typeof activeDraftKey!=='undefined' && typeof lastChat!=='undefined' && (!window.__nativePhase) && typeof showHistoryManagement==='function'"):
+                            if window.evaluate_js("typeof activeDraftKey!=='undefined' && typeof lastChat!=='undefined' && (!window.__nativePhase) && typeof showHistoryManagement==='function' && typeof window.pywebview==='object' && typeof window.pywebview._asyncCallback==='function'"):
                                 return
                         except Exception: pass
                         time.sleep(.1)
@@ -111,12 +115,12 @@ def main():
                         window.load_url(url+'/?native_reload=1#c=upgrade-chat')
                         wait_ready(True)
                         saved = evaluate("""
-                            document.querySelector('#notice').classList.remove('show'); await openChat('upgrade-chat'); await draftLoadPromise;
+                            window.__nativeStep='restore'; document.querySelector('#notice').classList.remove('show'); await openChat('upgrade-chat'); await draftLoadPromise;
                             if(document.querySelector('#input').value!=='原生窗口草稿' || pending.length!==1) throw Error('native persistent draft failed');
-                            await showHistoryManagement();
+                            window.__nativeStep='management'; await showHistoryManagement();
                             const drafts=await collectDrafts(); if(drafts.length!==1) throw Error('draft management list failed');
-                            const draft=await downloadDrafts(drafts);
-                            const backup=await api('/api/backup/export?save=true',{method:'POST'});
+                            window.__nativeStep='export-drafts'; const draft=await downloadDrafts(drafts);
+                            window.__nativeStep='export-backup'; const backup=await api('/api/backup/export?save=true',{method:'POST'});
                             return {ok:true,draft:draft.saved,backup:backup.saved};
                         """)
                         for name in (saved['draft'],saved['backup']):
