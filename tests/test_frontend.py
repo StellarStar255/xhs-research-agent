@@ -12,6 +12,12 @@ from xhs_reader import agent, server, settings
 
 @unittest.skipUnless(os.environ.get('XHS_BROWSER_TEST') == '1', 'optional local Chrome check')
 class FrontendTests(IsolatedTest):
+    def open_history(self, page):
+        if page.locator('#historyToast').is_visible():
+            page.locator('#historyToastClose').click()
+        page.locator('#gear').click()
+        page.locator('#historyManage').click()
+
     def setUp(self):
         super().setUp()
         from xhs_reader import suggestions
@@ -387,7 +393,7 @@ class FrontendTests(IsolatedTest):
                 expect(page.locator('#input')).to_have_value('第一段草稿')
                 expect(page.locator('#thumbs .thumb')).to_have_count(1)
                 expect(page.locator('#thread')).to_contain_text('保留部分答案')
-                page.locator('#historyManage').click()
+                self.open_history(page)
                 page.locator('#draftList .history-row').filter(has_text='测试').locator('input').check()
                 with page.expect_download() as exported:
                     page.locator('#draftExport').click()
@@ -440,7 +446,7 @@ class FrontendTests(IsolatedTest):
                 expect(page.locator('#input')).to_have_value('新建话题未发出的下一问')
                 agent.delete('second')
                 sid = store.new_session('保留的笔记'); store.save_notes(sid,[{'id':'n','opened':True,'desc':'正文'}])
-                page.locator('#historyManage').click()
+                self.open_history(page)
                 page.wait_for_selector('[data-clean="trash"]')
                 page.locator('[data-clean="trash"]').check()
                 page.locator('#storageCleanup').click()
@@ -499,6 +505,7 @@ class FrontendTests(IsolatedTest):
                 page.on('dialog', lambda dialog: dialog.accept())
                 page.goto(f'http://127.0.0.1:{sock.getsockname()[1]}/#c=test-chat')
                 page.wait_for_selector('[data-id="test-chat"]')
+                self.assertEqual(page.locator('aside #chatSearchHint, aside .history-controls, aside .history-filters, aside #historyManage').count(), 0)
                 page.locator('[data-id="test-chat"]').hover()
                 page.locator('[data-organize="test-chat"]').click()
                 page.locator('#togglePin').click()
@@ -508,10 +515,13 @@ class FrontendTests(IsolatedTest):
                 page.locator('[data-organize="test-chat"]').click()
                 page.locator('#toggleArchive').click()
                 expect(page.locator('[data-id="test-chat"]')).to_have_count(0)
+                self.open_history(page)
                 page.locator('#chatView').select_option('archived')
                 page.wait_for_selector('[data-id="test-chat"]')
+                page.locator('#sheet .close').click()
                 page.locator('#chatSearch').fill('身份证 黄启亮')
                 page.wait_for_timeout(300)
+                self.open_history(page)
                 page.locator('.history-filters summary').click()
                 page.locator('#chatScope').select_option('user')
                 expect(page.locator('#chats .chat-item')).to_have_count(0)
@@ -521,10 +531,11 @@ class FrontendTests(IsolatedTest):
                 page.locator('#chatSince').dispatch_event('change')
                 expect(page.locator('#chats .chat-item')).to_have_count(0)
                 page.locator('#resetFilters').click()
-                page.locator('#chatSearch').fill('')
                 page.locator('#chatView').select_option('all')
+                page.locator('#sheet .close').click()
+                page.locator('#chatSearch').fill('')
                 page.wait_for_selector('[data-id="test-chat"]')
-                page.locator('#historyManage').click()
+                self.open_history(page)
                 response = page.request.post(f'http://127.0.0.1:{sock.getsockname()[1]}/api/backup/export', headers={'Origin': 'https://other.example'})
                 self.assertEqual(response.status, 403)
                 with page.expect_download() as download:
@@ -538,12 +549,12 @@ class FrontendTests(IsolatedTest):
                 page.locator('#historyUndo').click()
                 page.wait_for_selector('[data-id="test-chat"]')
                 page.locator('[data-del="test-chat"]').click(force=True)
-                page.locator('#historyManage').click()
+                self.open_history(page)
                 page.locator('[data-restore="test-chat"]').click()
                 page.wait_for_selector('[data-id="test-chat"]')
                 page.locator('#sheet .close').click()
                 page.locator('[data-del="test-chat"]').click(force=True)
-                page.locator('#historyManage').click()
+                self.open_history(page)
                 page.locator('[data-purge="test-chat"]').click()
                 expect(page.locator('[data-purge="test-chat"]')).to_have_count(0)
                 page.locator('#backupFile').set_input_files(archive)

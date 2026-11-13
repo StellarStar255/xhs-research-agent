@@ -61,7 +61,6 @@ aside { width: var(--sidebar-width, 260px); position: relative; flex-shrink: 0; 
 .task-progress #taskElapsed { flex: 1; min-width: 0; }
 .task-progress strong, .task-progress button { flex-shrink: 0; }
 .task-progress strong { color: var(--ink); }
-.draft-state { color: var(--muted); font-size: 11px; min-height: 16px; margin-top: 3px; }
 .draft-preview { display: block; color: var(--muted); font-size: 12px; white-space: pre-wrap; }
 .diagnostic-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 50vh; overflow: auto; }
 .chat-search-state { padding: 12px 10px; color: var(--muted); font-size: 13px; }
@@ -328,14 +327,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   <div class="upd" id="updBanner" hidden>⬆ 新版本 <span id="updVer"></span> 可用<b>更新</b></div>
   <button class="new" id="newChat">＋ 新对话</button>
   <div class="chat-search">
-    <input id="chatSearch" type="search" placeholder="搜索历史对话…" aria-label="搜索历史对话" aria-describedby="chatSearchHint" autocomplete="off">
-    <small id="chatSearchHint">搜索标题和内容 · 多个关键词用空格分隔</small>
-    <div class="history-controls"><select id="chatView" aria-label="对话分类"><option value="active">当前对话</option><option value="archived">已归档</option><option value="all">全部对话</option></select><button id="historyManage">管理</button></div>
-    <details class="history-filters"><summary>筛选范围与日期</summary>
-      <label>搜索范围<select id="chatScope"><option value="all">标题和全部内容</option><option value="user">仅我的提问</option><option value="assistant">仅助手回答</option></select></label>
-      <label>更新自<input type="date" id="chatSince"></label><label>更新至<input type="date" id="chatUntil"></label>
-      <button id="resetFilters" class="gear">重置筛选</button>
-    </details>
+    <input id="chatSearch" type="search" placeholder="搜索历史对话…" aria-label="搜索历史对话" autocomplete="off">
   </div>
   <div id="chatListStatus" role="status" hidden><span id="chatListError"></span> <button id="chatListRetry" class="gear">重试</button></div>
   <div class="chats" id="chats" aria-label="历史对话列表"></div>
@@ -361,7 +353,6 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
       <button class="stopbtn" id="stop" hidden title="停止当前回答（排队的消息会接着发送）">■ 停止</button>
       <button class="send" id="send" disabled>发送</button>
     </div>
-    <div id="draftStatus" class="draft-state" role="status"></div>
     <div class="hint">助手会放慢速度浏览小红书，减少对平台的访问压力，先看搜索列表再挑几篇打开，每篇约 10 秒 · 回答过程中也可以继续发送（会排队） · 支持粘贴 / 拖入图片 · Enter 发送，Shift+Enter 换行</div>
   </div>
 </main>
@@ -444,7 +435,6 @@ function writeDraft(key, value, defer = false) {
   if (defer) {
     // Avoid repeatedly cloning multi-megabyte images for every keystroke.
     draftTimers.set(key, setTimeout(() => writeDraft(key, value), 250));
-    $('#draftStatus').textContent = textSaved ? '草稿文字已自动保存' : '正在保存草稿…';
     return draftWrites;
   }
   const ticket = draftNavigation, edits = draftEdits;
@@ -454,8 +444,8 @@ function writeDraft(key, value, defer = false) {
       try { const tx = db.transaction('drafts', 'readwrite'); tx.objectStore('drafts').put(value, key); tx.oncomplete = () => resolve(true); tx.onerror = tx.onabort = () => resolve(false); }
       catch { resolve(false); }
     });
-    if (key === activeDraftKey && ticket === draftNavigation && edits === draftEdits) $('#draftStatus').textContent = !value.text && !value.images.length ? ''
-      : saved ? '草稿已自动保存到本浏览器' : textSaved ? (value.images.length ? '草稿文字已保存，图片暂未保存' : '草稿文字已自动保存') : '草稿暂时仅保留在本窗口';
+    if (key === activeDraftKey && ticket === draftNavigation && edits === draftEdits && !saved && (value.images.length || !textSaved) && (value.text || value.images.length))
+      recordFailure('保存输入草稿', '浏览器持久存储不可用，部分草稿可能仅保留在当前窗口');
   });
   return draftWrites;
 }
@@ -469,7 +459,7 @@ function activateDraft(id) {
   const ticket = ++draftNavigation, edits = ++draftEdits;
   draftLoadingTicket = ticket; draftLoadingEdits = edits;
   $('#input').value = draftMemory.get(key)?.text || draftLocal(key)?.text || ''; pending = [];
-  $('#draftStatus').textContent = ''; renderThumbs(); autosize();
+  renderThumbs(); autosize();
   draftLoadPromise = readDraft(key).then(value => {
     if (ticket !== draftNavigation) return;
     if (edits === draftEdits) $('#input').value = typeof value.text === 'string' ? value.text : '';
@@ -477,7 +467,6 @@ function activateDraft(id) {
       .map(p => ({...p, url: `data:${p.media_type};base64,${p.data}`}));
     pending = edits === draftEdits ? restored : [...restored, ...pending].filter((p, i, all) => all.findIndex(q => q.data === p.data && q.media_type === p.media_type) === i);
     renderThumbs(); autosize();
-    if ($('#input').value || pending.length) $('#draftStatus').textContent = '已恢复本浏览器的输入草稿';
   }).finally(() => {
     if (ticket === draftNavigation) { draftLoadingTicket = 0; if (edits !== draftEdits) saveComposerDraft(); }
   });
@@ -530,6 +519,7 @@ setInterval(syncHistory, 10000);  // also covers another browser or a phone
 let renaming = false;  // don't redraw the list while a name is being edited
 let chatSearchTimer, chatListRequest = 0, searchComposing = false;
 let chatListSignature = '', chatListLoaded = false;
+const chatFilters = {scope: 'all', view: 'active', since: '', until: ''};
 const searchWords = query => [...new Set(query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean))];
 function highlighted(text, query) {
   const words = searchWords(query).sort((a, b) => b.length - a.length);
@@ -546,8 +536,7 @@ async function loadChats() {
   if (searchComposing) return false;
   const request = ++chatListRequest;
   const query = $('#chatSearch').value.trim();
-  const params = new URLSearchParams({q: query, scope: $('#chatScope').value, view: $('#chatView').value,
-    since: $('#chatSince').value, until: $('#chatUntil').value});
+  const params = new URLSearchParams({q: query, ...chatFilters});
   let list;
   try { list = await api('/api/chats?' + params); }
   catch (e) {
@@ -582,13 +571,6 @@ async function loadChats() {
   return true;
 }
 $('#chatListRetry').onclick = () => loadChats();
-for (const id of ['chatView', 'chatScope', 'chatSince', 'chatUntil']) $('#' + id).onchange = () => {
-  clearTimeout(chatSearchTimer); clearSearchNavigation(); loadChats();
-};
-$('#resetFilters').onclick = () => {
-  $('#chatView').value = 'active'; $('#chatScope').value = 'all'; $('#chatSince').value = $('#chatUntil').value = '';
-  clearSearchNavigation(); loadChats();
-};
 $('#chatSearch').addEventListener('input', () => {
   clearTimeout(chatSearchTimer);
   clearSearchNavigation();
@@ -701,7 +683,7 @@ function showOrganize(button) {
   const id = button.dataset.organize, pinned = button.dataset.pinned === 'true', archived = button.dataset.archived === 'true';
   $('#sheet').innerHTML = `<div class="settings"><button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button><h2>整理对话</h2>
     <div class="history-actions"><button class="btn" id="togglePin">${pinned ? '取消置顶' : '置顶对话'}</button><button class="btn" id="toggleArchive">${archived ? '取消归档' : '归档对话'}</button></div>
-    <p class="note">归档后的对话可在左侧「已归档」中查看和继续使用。</p></div>`;
+    <p class="note">归档后的对话可在「设置 → 历史记录管理」中切换分类查看。</p></div>`;
   const change = async body => {
     try { await api(`/api/chats/${encodeURIComponent(id)}/organize`, {method: 'POST', body: JSON.stringify(body)}); $('#modal').classList.remove('show'); loadChats(); }
     catch (e) { historyToast(e.message); }
@@ -712,12 +694,27 @@ function showOrganize(button) {
 }
 async function showHistoryManagement() {
   $('#sheet').innerHTML = `<div class="settings"><button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button><h2>历史记录管理</h2>
+    <div class="history-controls"><select id="chatView" aria-label="对话分类"><option value="active">当前对话</option><option value="archived">已归档</option><option value="all">全部对话</option></select></div>
+    <details class="history-filters"><summary>筛选范围与日期</summary>
+      <label>搜索范围<select id="chatScope"><option value="all">标题和全部内容</option><option value="user">仅我的提问</option><option value="assistant">仅助手回答</option></select></label>
+      <label>更新自<input type="date" id="chatSince"></label><label>更新至<input type="date" id="chatUntil"></label>
+      <button id="resetFilters" class="gear">重置筛选</button>
+    </details>
     ${REMOTE ? '' : `<h3>备份与恢复</h3><p class="note">备份聊天、图片、回收站和已保存的笔记。导入会跳过已有记录，不覆盖当前数据。请先等待回答结束。</p>
     <div class="history-actions"><button class="btn" id="backupExport">备份到 ZIP</button><button class="btn" id="backupImport">导入备份</button><input type="file" id="backupFile" accept=".zip,application/zip" hidden></div><div id="backupPreview" hidden></div><p id="backupResult" class="note" role="status"></p>`}
     <h3>输入草稿</h3><p class="note">本浏览器保存的文字和图片，可恢复、导出或删除。</p><div id="draftList">正在加载…</div>
     <h3>回收站</h3><p class="note">删除的对话会保留在这里，恢复后不会自动发送排队消息。</p><div id="trashList">正在加载…</div>
     ${REMOTE ? '' : '<h3>磁盘占用</h3><div id="storageUsage">正在统计…</div><div class="history-actions"><button class="btn" id="openDiagnostics">查看错误诊断</button></div>'}</div>`;
   $('#modal').classList.add('show');
+  for (const [id, key] of [['chatView','view'], ['chatScope','scope'], ['chatSince','since'], ['chatUntil','until']]) {
+    $('#' + id).value = chatFilters[key];
+    $('#' + id).onchange = () => { chatFilters[key] = $('#' + id).value; clearTimeout(chatSearchTimer); clearSearchNavigation(); loadChats(); };
+  }
+  $('#resetFilters').onclick = () => {
+    Object.assign(chatFilters, {scope:'all',view:'active',since:'',until:''});
+    for (const [id, key] of [['chatView','view'], ['chatScope','scope'], ['chatSince','since'], ['chatUntil','until']]) $('#' + id).value = chatFilters[key];
+    clearSearchNavigation(); loadChats();
+  };
   if (!REMOTE) {
     const result = $('#backupResult'), exportButton = $('#backupExport'), importButton = $('#backupImport'), fileInput = $('#backupFile'), previewBox = $('#backupPreview');
     const busy = value => { exportButton.disabled = importButton.disabled = value; };
@@ -797,7 +794,7 @@ async function removeDrafts(keys) {
     catch (e) { reject(e); }
   });
   for (const key of keys) { draftMemory.delete(key); try { localStorage.removeItem('xhs-draft:' + key); } catch {} }
-  if (keys.includes(activeDraftKey)) { draftEdits++; $('#input').value = ''; pending = []; renderThumbs(); autosize(); $('#draftStatus').textContent = ''; }
+  if (keys.includes(activeDraftKey)) { draftEdits++; $('#input').value = ''; pending = []; renderThumbs(); autosize(); }
 }
 async function downloadDrafts(drafts) {
   const body = JSON.stringify({format:'xhs-drafts',version:1,exported_at:new Date().toISOString(),drafts}, null, 2);
@@ -898,7 +895,7 @@ async function loadTrash() {
     };
   } catch (e) { if ($('#trashList') === box) box.textContent = e.message; }
 }
-$('#historyManage').onclick = showHistoryManagement;
+document.addEventListener('click', e => { if (e.target.closest('#historyManage')) showHistoryManagement(); });
 
 let activeSearch = '', searchIndex = 0, searchMessages = [];
 function clearSearchNavigation() {
@@ -921,7 +918,7 @@ function refreshSearchNavigation(jump = false) {
     while (walker.nextNode()) {
       const node = walker.currentNode;
       const messageRole = message.classList.contains('user') ? 'user' : 'assistant';
-      if (($('#chatScope').value === 'all' || $('#chatScope').value === messageRole) && node.parentElement.closest('.bubble, .md') && !node.parentElement.closest('button')) nodes.push(node);
+      if ((chatFilters.scope === 'all' || chatFilters.scope === messageRole) && node.parentElement.closest('.bubble, .md') && !node.parentElement.closest('button')) nodes.push(node);
     }
     let hit = false;
     nodes.forEach(node => {
@@ -1656,6 +1653,7 @@ async function openSettings(message) {
     $('#sheet').innerHTML = `<div class="settings">
       <button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button>
       <h2>设置</h2>
+      <button class="btn" id="historyManage">历史记录管理</button>
       <p>现在用的是：<b>${esc($('#backendLabel').textContent)}</b>
         · 联网搜索${conf.web_search ? '已开启' : '未开启'}</p>
       <p class="note">这是手机访问模式。修改设置、登录小红书、更新和退出，请在电脑上进行。</p>
@@ -1671,6 +1669,7 @@ async function openSettings(message) {
   $('#sheet').innerHTML = `<div class="settings">
     <button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button>
     <h2>设置</h2>
+    <button class="btn" id="historyManage">历史记录管理</button>
     ${message ? `<p class="err-text" style="font-size:13px">${esc(message)}</p>` : ''}
     ${ui.native ? `<h3>打开方式</h3><div class="seg">
       <label class="opt ${ui.mode === 'window' ? 'on' : ''}"><input type="radio" name="uimode" value="window" ${ui.mode === 'window' ? 'checked' : ''}>
@@ -1884,7 +1883,6 @@ $('#chats').addEventListener('click', e => {
 });
 $('#newChat').addEventListener('click', closeSide);
 $('#gear').addEventListener('click', closeSide);
-$('#historyManage').addEventListener('click', closeSide);
 if (matchMedia('(max-width: 760px)').matches) $('#input').placeholder = '问点什么……';
 
 let REMOTE = false;  // opened from a phone through 手机访问
