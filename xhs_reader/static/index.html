@@ -365,7 +365,7 @@ async function loadChats() {
   if (renaming || request !== chatListRequest || query !== $('#chatSearch').value.trim()) return;
   $('#chats').innerHTML = list.map(c => `
     <div class="chat-item ${c.id === current ? 'active' : ''}" data-id="${esc(c.id)}">
-      ${c.running ? '<span class="spin"></span>' : ''}<span class="t" title="双击重命名">${esc(c.title)}</span>
+      ${c.running ? '<span class="spin"></span>' : ''}<span class="t" title="${esc(c.title)}">${esc(c.title)}</span>
       <button class="x" data-ren="${esc(c.id)}" title="重命名">✎</button>
       <button class="x" data-del="${esc(c.id)}" title="删除">×</button>
     </div>`).join('') || `<div class="chat-search-state" role="status">${query ? '没有找到同时包含这些关键词的对话' : '暂无历史对话'}</div>`;
