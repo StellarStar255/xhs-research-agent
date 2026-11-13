@@ -102,7 +102,9 @@ def main():
                             if(document.querySelector('#input').value!=='原生窗口草稿' || pending.length!==1) throw Error('native draft switch failed');
                             window.__nativePhase='reload'; return {ok:true};
                         """)
-                        window.load_url(url+'/#c=upgrade-chat')
+                        # WebView2 treats an identical fragment URL as same-document
+                        # navigation. Force a new document so its bridge-ready event resets.
+                        window.load_url(url+'/?native_reload=1#c=upgrade-chat')
                         wait_ready(True)
                         saved = evaluate("""
                             document.querySelector('#notice').classList.remove('show'); await openChat('upgrade-chat'); await draftLoadPromise;
