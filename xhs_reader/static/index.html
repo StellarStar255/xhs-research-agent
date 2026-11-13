@@ -78,8 +78,11 @@ aside { width: var(--sidebar-width, 260px); position: relative; flex-shrink: 0; 
 .chat-item.pinned .t::before { content: '置顶 · '; font-size: 11px; color: var(--muted); }
 .chat-snippet { color: var(--muted); font-size: 12px; line-height: 1.5; display: -webkit-box;
                 -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-mark.search-hit { background: #ffd76a; color: #201900; border-radius: 2px; }
-.msg.search-current { outline: 2px solid var(--accent); outline-offset: 5px; border-radius: 5px; }
+mark.search-hit { background: transparent; color: inherit; text-decoration: underline;
+                  text-decoration-color: #dd718280; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+.msg.search-current mark.search-hit { text-decoration-color: var(--accent); }
+.msg.user mark.search-hit { text-decoration-color: #ffffff80; }
+.msg.user.search-current mark.search-hit { text-decoration-color: #fff; }
 .search-nav { padding: 6px 14px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .search-nav button { background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 5px; margin-left: 6px; }
 .search-nav[hidden] { display: none; }
