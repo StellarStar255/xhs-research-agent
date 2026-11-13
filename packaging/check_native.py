@@ -81,11 +81,15 @@ def main():
                                 return
                         except Exception: pass
                         time.sleep(.1)
-                    raise RuntimeError('native page did not become ready')
+                    try:
+                        state = window.evaluate_js("({url:String(location.href),ready:document.readyState,title:document.title,input:!!document.getElementById('input'),script:typeof showHistoryManagement,bridge:typeof window.pywebview})")
+                    except Exception as e: state = str(e)
+                    raise RuntimeError('native page did not become ready: '+json.dumps({'renderer':str(window.gui.renderer),'state':state},ensure_ascii=True))
                 def test():
                     if started.is_set(): return
                     started.set()
                     try:
+                        print(json.dumps({'native_renderer':str(window.gui.renderer)}),flush=True)
                         wait_ready()
                         evaluate("""
                             document.querySelector('#notice').classList.remove('show');
