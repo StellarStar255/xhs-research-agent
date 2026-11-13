@@ -400,7 +400,7 @@ function stopExamples() {
 let current = null, lastJson = '', pollTimer = null, running = false, chatRequest = 0, composerRoute = 0;
 let recentFailure = {operation: '', error: ''};
 function recordFailure(operation, error) {
-  let text = String(error?.stack || error?.message || error || '');
+  let text = error && (error.message || error.stack) ? [error.name, error.message, error.stack].filter(Boolean).join('\n') : String(error || '');
   document.querySelectorAll('input[type=password]').forEach(input => { if (input.value.length >= 4) text = text.split(input.value).join('[已隐藏]'); });
   recentFailure = {operation: String(operation).slice(0, 200), error: text.slice(0, 6000)};
 }

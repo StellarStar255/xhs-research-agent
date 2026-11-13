@@ -65,11 +65,15 @@ def main():
             result = {}; started = threading.Event(); original_create = webview.create_window
             def create(*a, **kw):
                 window = original_create(*a, **kw)
+                phase = 0
                 def evaluate(code):
+                    nonlocal phase
+                    phase += 1
+                    print(json.dumps({'native_phase':phase}),flush=True)
                     finished = threading.Event(); value = []
                     def done(response): value.append(response); finished.set()
-                    window.evaluate_js('(async()=>{try{'+code+'}catch(e){return {ok:false,error:String(e.stack||e)}}})()',callback=done)
-                    if not finished.wait(30): raise RuntimeError('native JavaScript timed out')
+                    window.evaluate_js('(async()=>{try{'+code+'}catch(e){return {ok:false,error:String(e.name)+": "+String(e.message)+"\\n"+String(e.stack||"")}}})()',callback=done)
+                    if not finished.wait(30): raise RuntimeError('native JavaScript timed out in phase '+str(phase))
                     if not value or not isinstance(value[0],dict) or not value[0].get('ok'):
                         raise AssertionError(str(value))
                     return value[0]
