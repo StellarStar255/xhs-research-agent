@@ -41,7 +41,7 @@ class DiagnosticsTests(IsolatedTest):
 
     def test_report_does_not_read_logs_or_conversations(self):
         self.chat(title='私密标题', messages=[{'role':'user','text':'私密聊天正文'}])
-        (self.tmp / 'app.log').write_text('私密日志内容')
+        (self.tmp / 'app.log').write_text('私密日志内容', encoding='utf-8')
         result = diagnostics.report('请求失败', '正常错误描述')
         for text in ('私密标题','私密聊天正文','私密日志内容','key-a'):
             self.assertNotIn(text,result)
