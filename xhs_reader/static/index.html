@@ -62,6 +62,8 @@ aside { width: var(--sidebar-width, 260px); position: relative; flex-shrink: 0; 
 .task-progress strong, .task-progress button { flex-shrink: 0; }
 .task-progress strong { color: var(--ink); }
 .draft-state { color: var(--muted); font-size: 11px; min-height: 16px; margin-top: 3px; }
+.draft-preview { display: block; color: var(--muted); font-size: 12px; white-space: pre-wrap; }
+.diagnostic-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 50vh; overflow: auto; }
 .chat-search-state { padding: 12px 10px; color: var(--muted); font-size: 13px; }
 .chats { flex: 1; overflow-y: auto; padding: 0 8px; }
 .chat-item { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; }
@@ -396,6 +398,14 @@ function stopExamples() {
   examplesRequest++;
 }
 let current = null, lastJson = '', pollTimer = null, running = false, chatRequest = 0, composerRoute = 0;
+let recentFailure = {operation: '', error: ''};
+function recordFailure(operation, error) {
+  let text = String(error?.stack || error?.message || error || '');
+  document.querySelectorAll('input[type=password]').forEach(input => { if (input.value.length >= 4) text = text.split(input.value).join('[已隐藏]'); });
+  recentFailure = {operation: String(operation).slice(0, 200), error: text.slice(0, 6000)};
+}
+window.addEventListener('error', e => recordFailure('页面脚本', e.error || e.message));
+window.addEventListener('unhandledrejection', e => recordFailure('页面异步操作', e.reason));
 
 // Text has a synchronous fallback for abrupt closes; IndexedDB also keeps image drafts.
 let activeDraftKey, draftNavigation = 0, draftEdits = 0, draftLoadingTicket = 0, draftLoadingEdits = 0, draftLoadPromise = Promise.resolve(), draftWrites = Promise.resolve(), sendInFlight = false;
@@ -476,9 +486,19 @@ function activateDraft(id) {
 window.addEventListener('pagehide', saveComposerDraft);
 document.addEventListener('visibilitychange', () => { if (document.hidden) saveComposerDraft(); });
 
+async function checkedFetch(path, opts = {}) {
+  try {
+    const r = await fetch(path, opts);
+    if (!r.ok) {
+      const detail = (await r.json().catch(() => ({}))).detail;
+      const e = new Error((typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : '') || r.statusText || `HTTP ${r.status}`);
+      e.status = r.status; throw e;
+    }
+    return r;
+  } catch (e) { if (!path.startsWith('/api/diagnostics')) recordFailure((opts.method || 'GET') + ' ' + path, e); throw e; }
+}
 async function api(path, opts = {}) {
-  const r = await fetch(path, {headers: {'Content-Type': 'application/json'}, ...opts});
-  if (!r.ok) { const e = new Error((await r.json().catch(() => ({}))).detail || r.statusText); e.status = r.status; throw e; }
+  const r = await checkedFetch(path, {headers: {'Content-Type': 'application/json'}, ...opts});
   const result = await r.json();
   if (opts.method && opts.method !== 'GET' && /^\/api\/(chats|trash)(\/|$)/.test(path)) broadcastHistoryChange();
   return result;
@@ -694,8 +714,9 @@ async function showHistoryManagement() {
   $('#sheet').innerHTML = `<div class="settings"><button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button><h2>历史记录管理</h2>
     ${REMOTE ? '' : `<h3>备份与恢复</h3><p class="note">备份聊天、图片、回收站和已保存的笔记。导入会跳过已有记录，不覆盖当前数据。请先等待回答结束。</p>
     <div class="history-actions"><button class="btn" id="backupExport">备份到 ZIP</button><button class="btn" id="backupImport">导入备份</button><input type="file" id="backupFile" accept=".zip,application/zip" hidden></div><div id="backupPreview" hidden></div><p id="backupResult" class="note" role="status"></p>`}
+    <h3>输入草稿</h3><p class="note">本浏览器保存的文字和图片，可恢复、导出或删除。</p><div id="draftList">正在加载…</div>
     <h3>回收站</h3><p class="note">删除的对话会保留在这里，恢复后不会自动发送排队消息。</p><div id="trashList">正在加载…</div>
-    ${REMOTE ? '' : '<h3>磁盘占用</h3><div id="storageUsage">正在统计…</div>'}</div>`;
+    ${REMOTE ? '' : '<h3>磁盘占用</h3><div id="storageUsage">正在统计…</div><div class="history-actions"><button class="btn" id="openDiagnostics">查看错误诊断</button></div>'}</div>`;
   $('#modal').classList.add('show');
   if (!REMOTE) {
     const result = $('#backupResult'), exportButton = $('#backupExport'), importButton = $('#backupImport'), fileInput = $('#backupFile'), previewBox = $('#backupPreview');
@@ -704,7 +725,7 @@ async function showHistoryManagement() {
       busy(true); result.textContent = '正在生成备份…';
       try {
         const save = !!window.pywebview;
-        const r = await fetch('/api/backup/export?save=' + save, {method: 'POST'});
+        const r = await checkedFetch('/api/backup/export?save=' + save, {method: 'POST'});
         if (!r.ok) throw new Error((await r.json()).detail);
         if (save) {
           const info = await r.json(); result.textContent = '已保存到「下载」：' + info.name;
@@ -725,7 +746,7 @@ async function showHistoryManagement() {
       if (file.size > 256 * 1024 * 1024) { result.textContent = '备份文件不能超过 256 MB'; fileInput.value = ''; return; }
       busy(true); previewBox.hidden = true; result.textContent = '正在校验备份并生成预览…';
       try {
-        const r = await fetch('/api/backup/import?preview=true', {method: 'POST', headers: {'Content-Type': 'application/zip'}, body: file});
+        const r = await checkedFetch('/api/backup/import?preview=true', {method: 'POST', headers: {'Content-Type': 'application/zip'}, body: file});
         const info = await r.json(); if (!r.ok) throw new Error(info.detail);
         result.textContent = '校验通过，请确认导入。';
         previewBox.innerHTML = `<h3>导入预览</h3><p class="note">${esc(file.name)}：共 ${info.conversations} 个对话记录、${info.attachments} 个图片附件，解压后约 ${(info.expanded_bytes / 1024 / 1024).toFixed(1)} MB。</p>
@@ -737,7 +758,7 @@ async function showHistoryManagement() {
         previewBox.querySelector('#backupConfirm').onclick = async () => {
           busy(true); previewBox.querySelectorAll('button').forEach(b => b.disabled = true); result.textContent = '正在导入…';
           try {
-            const response = await fetch('/api/backup/import', {method: 'POST', headers: {'Content-Type': 'application/zip'}, body: file});
+            const response = await checkedFetch('/api/backup/import', {method: 'POST', headers: {'Content-Type': 'application/zip'}, body: file});
             const imported = await response.json(); if (!response.ok) throw new Error(imported.detail);
             previewBox.hidden = true; previewBox.innerHTML = '';
             result.textContent = `已导入 ${imported.imported} 个对话、${imported.trash} 个回收站记录和 ${imported.research} 组笔记，跳过 ${imported.skipped} 个已有对话`;
@@ -750,8 +771,88 @@ async function showHistoryManagement() {
       fileInput.value = ''; busy(false);
     };
   }
+  if ($('#openDiagnostics')) $('#openDiagnostics').onclick = () => showDiagnostics();
+  await loadDraftManagement();
   await loadTrash();
   if (!REMOTE) await loadStorageUsage();
+}
+async function collectDrafts() {
+  saveComposerDraft(); await draftWrites;
+  const keys = new Set(draftMemory.keys()), db = await draftDB;
+  if (db) await new Promise(resolve => {
+    try { const r = db.transaction('drafts').objectStore('drafts').getAllKeys(); r.onsuccess = () => { r.result.forEach(key => keys.add(key)); resolve(); }; r.onerror = () => resolve(); }
+    catch { resolve(); }
+  });
+  try { for (let i=0; i<localStorage.length; i++) { const key = localStorage.key(i); if (key.startsWith('xhs-draft:')) keys.add(key.slice(10)); } } catch {}
+  const values = [];
+  for (const key of keys) { const value = await readDraft(key); if (value.text || value.images?.length) values.push({key, ...value}); }
+  return values.sort((a,b) => b.at - a.at);
+}
+async function removeDrafts(keys) {
+  keys.forEach(key => { clearTimeout(draftTimers.get(key)); draftTimers.delete(key); });
+  await draftWrites;
+  const db = await draftDB;
+  if (db) await new Promise((resolve, reject) => {
+    try { const tx = db.transaction('drafts','readwrite'); keys.forEach(key => tx.objectStore('drafts').delete(key)); tx.oncomplete = resolve; tx.onerror = tx.onabort = () => reject(new Error('草稿删除失败，请重试')); }
+    catch (e) { reject(e); }
+  });
+  for (const key of keys) { draftMemory.delete(key); try { localStorage.removeItem('xhs-draft:' + key); } catch {} }
+  if (keys.includes(activeDraftKey)) { draftEdits++; $('#input').value = ''; pending = []; renderThumbs(); autosize(); $('#draftStatus').textContent = ''; }
+}
+async function downloadDrafts(drafts) {
+  const body = JSON.stringify({format:'xhs-drafts',version:1,exported_at:new Date().toISOString(),drafts}, null, 2);
+  if (new Blob([body]).size > 64 * 1024 * 1024) throw new Error('所选草稿超过 64 MB，请分批导出');
+  if (window.pywebview) return api('/api/drafts/export', {method:'POST',body});
+  const blob = new Blob([body], {type:'application/json;charset=utf-8'}), url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = '种草调研助手-草稿.json'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
+  return {name:a.download};
+}
+async function loadDraftManagement() {
+  const box = $('#draftList'); if (!box) return;
+  try {
+    const drafts = await collectDrafts(), chats = await api('/api/chats?view=all');
+    if ($('#draftList') !== box) return;
+    const titles = new Map(chats.map(c => [c.id,c.title]));
+    drafts.forEach(d => d.title = d.key === '__new' ? '新对话' : titles.get(d.key) || '未命名或已删除的对话');
+    box.innerHTML = drafts.map((d,i) => `<div class="history-row"><input type="checkbox" data-draft-index="${i}" aria-label="选择${esc(d.title)}"><span><b>${esc(d.title)}</b><small class="draft-preview">${esc(d.text.slice(0,80))}${d.text.length > 80 ? '…' : ''} · ${d.images.length} 张图片</small></span><button class="btn" data-draft-restore="${i}">恢复</button></div>`).join('')
+      + (drafts.length ? '<div class="history-actions"><button class="btn" id="draftExport" disabled>导出所选草稿</button><button class="btn" id="draftDelete" disabled>删除所选草稿</button></div><p class="note" id="draftResult" role="status"></p>' : '<p class="note">暂无输入草稿</p>');
+    const selected = () => [...box.querySelectorAll('[data-draft-index]:checked')].map(el => drafts[+el.dataset.draftIndex]);
+    box.onchange = () => { $('#draftExport').disabled = $('#draftDelete').disabled = !selected().length; };
+    box.onclick = async e => {
+      const index = e.target.dataset.draftRestore; if (index === undefined) return;
+      const draft = drafts[+index];
+      if (titles.has(draft.key)) await openChat(draft.key);
+      else {
+        const previous = await readDraft('__new');
+        if (draft.key !== '__new' && (previous.text || previous.images.length) && !confirm('用这份草稿替换新对话中已有的草稿？')) return;
+        newChat(); await draftLoadPromise;
+        $('#input').value = draft.text; pending = draft.images.map(p => ({...p,url:`data:${p.media_type};base64,${p.data}`})); draftEdits++; renderThumbs(); autosize(); saveComposerDraft();
+      }
+      $('#modal').classList.remove('show'); $('#input').focus();
+    };
+    if ($('#draftExport')) $('#draftExport').onclick = async () => {
+      const output = $('#draftResult');
+      try { const result = await downloadDrafts(selected()); output.textContent = (result.saved ? '已保存到「下载」：' : '已导出：') + result.name; }
+      catch (e) { output.textContent = e.message; }
+    };
+    if ($('#draftDelete')) $('#draftDelete').onclick = async () => {
+      const rows = selected(); if (!rows.length || !confirm(`删除所选 ${rows.length} 份输入草稿？聊天记录不会删除。`)) return;
+      try { await removeDrafts(rows.map(d => d.key)); await loadDraftManagement(); }
+      catch (e) { historyToast(e.message); }
+    };
+  } catch (e) { if ($('#draftList') === box) box.textContent = e.message; }
+}
+async function showDiagnostics(failure) {
+  if (failure) recordFailure(failure.operation, failure.error);
+  $('#sheet').innerHTML = `<div class="settings">${closeBtn}<h2>错误诊断</h2><p class="note">先查看详情，再复制用于排查。密钥、令牌、Cookie 和网址参数会自动隐藏。</p><pre id="diagnosticReport" class="diagnostic-text">正在生成…</pre><button class="btn" id="diagnosticCopy" disabled>复制错误详情</button><span id="diagnosticResult" class="note" role="status"></span></div>`;
+  $('#modal').classList.add('show');
+  const box = $('#diagnosticReport');
+  try {
+    const result = await api('/api/diagnostics', {method:'POST',body:JSON.stringify(recentFailure)});
+    if ($('#diagnosticReport') !== box) return;
+    box.textContent = result.report; $('#diagnosticCopy').disabled = false;
+    $('#diagnosticCopy').onclick = async () => { const ok = await copyText(result.report); if ($('#diagnosticResult')) $('#diagnosticResult').textContent = ok ? '已复制' : '复制未成功，可选中文字手动复制'; };
+  } catch (e) { if ($('#diagnosticReport') === box) box.textContent = e.message; }
 }
 const formatBytes = size => size >= 1024 ** 3 ? (size / 1024 ** 3).toFixed(2) + ' GB' : size >= 1024 ** 2 ? (size / 1024 ** 2).toFixed(1) + ' MB' : (size / 1024).toFixed(1) + ' KB';
 async function loadStorageUsage() {
@@ -1226,7 +1327,7 @@ function renderThread(chat, jump) {
     const draft = m.draft_html ? `<div class="md caret">${m.draft_html}</div>` : '';
     const busy = m.status === 'running' && !draft && !(m.parts || []).some(p => p.status === 'running')
       ? '<div class="thinking"><span class="spin"></span>思考中…</div>' : '';
-    const err = m.status === 'error' ? `<div class="error">${esc(m.error || '回答出错')}${m.error_kind === 'interrupted' ? `<button class="btn" data-continue="${i}">继续这次回答</button>` : ''}</div>`
+    const err = m.status === 'error' ? `<div class="error">${esc(m.error || '回答出错')}${m.error_kind === 'interrupted' ? `<button class="btn" data-continue="${i}">继续这次回答</button>` : ''}${REMOTE ? '' : `<button class="btn" data-diagnostic="${i}">错误详情</button>`}</div>`
       : m.status === 'stopped' ? '<div class="meta-line">已停止</div>' : '';
     const tokens = m.usage && (m.usage.prompt + m.usage.completion) ? usageText(m.usage) : '';
     const meta = m.status === 'done' && m.elapsed ? `<div class="meta-line">用时 ${m.elapsed < 60 ? m.elapsed + ' 秒' : Math.round(m.elapsed / 60) + ' 分钟'}${m.model ? ' · ' + esc(m.model) : ''}${tokens}</div>` : '';
@@ -1240,6 +1341,7 @@ function renderThread(chat, jump) {
       <div class="qnote">排队中 · 当前回答结束后自动发送<button data-unqueue="${esc(q.id)}">取消</button></div></div></div>`;
   }));
   reconcileThread(threadHtml);
+  document.querySelectorAll('[data-diagnostic]').forEach(b => b.onclick = () => showDiagnostics({operation:'回答失败',error:lastChat.messages[+b.dataset.diagnostic].error || '回答出错'}));
   document.querySelectorAll('[data-reuse]').forEach(b => b.onclick = async () => {
     const cid = current, route = composerRoute;
     try {
@@ -1326,7 +1428,7 @@ function showExport(index) {
                   hide_names: $('#xHide').checked, save: !!window.pywebview};
     $('#xGo').disabled = true; out(fmt === 'html' ? '正在生成…' : fmt === 'pdf' ? '正在生成 PDF…' : '正在生成图片…', true);
     try {
-      const r = await fetch(`/api/chats/${encodeURIComponent(current)}/export`, {method: 'POST',
+      const r = await checkedFetch(`/api/chats/${encodeURIComponent(current)}/export`, {method: 'POST',
         headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
       if (!r.ok) { const e = new Error((await r.json().catch(() => ({}))).detail || r.statusText); e.status = r.status; throw e; }
       if (body.save) {  // the app's own window can't download: the server saved it to 下载

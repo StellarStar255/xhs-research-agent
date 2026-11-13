@@ -81,6 +81,8 @@ jobs:
           curl -sf -X POST localhost:8766/api/shutdown
           for i in $(seq 1 10); do kill -0 $PID 2>/dev/null || break; sleep 1; done
           if kill -0 $PID 2>/dev/null; then echo "::error::GUI did not exit after shutdown"; exit 1; fi
+      - name: Native WebView workflows against frozen server
+        run: python packaging/check_native.py --binary "dist/XHS Research Agent.app/Contents/MacOS/XHS Research Agent"
       - name: Import signing certificate
         if: env.MACOS_CERT_P12 != ''
         shell: bash
@@ -151,6 +153,8 @@ jobs:
             Get-Content "$env:XHS_DATA_DIR\app.log"; throw "tray icon failed to start" }
           Invoke-RestMethod -Method Post http://localhost:8766/api/shutdown | Out-Null
           if (-not $p.WaitForExit(15000)) { throw "GUI with window did not exit after shutdown" }
+      - name: Native WebView workflows against frozen server
+        run: python packaging/check_native.py --binary "dist/XHS Research Agent/XHS Research Agent.exe"
       - name: Build installer
         shell: pwsh
         run: |

@@ -337,6 +337,7 @@ class FrontendTests(IsolatedTest):
 
     def test_drafts_recovery_and_storage_management(self):
         import base64
+        import json
         import uvicorn
         from playwright.sync_api import sync_playwright, expect
         from xhs_reader import note_cache, store
@@ -386,6 +387,15 @@ class FrontendTests(IsolatedTest):
                 expect(page.locator('#input')).to_have_value('第一段草稿')
                 expect(page.locator('#thumbs .thumb')).to_have_count(1)
                 expect(page.locator('#thread')).to_contain_text('保留部分答案')
+                page.locator('#historyManage').click()
+                page.locator('#draftList .history-row').filter(has_text='测试').locator('input').check()
+                with page.expect_download() as exported:
+                    page.locator('#draftExport').click()
+                exported_path = self.tmp / 'drafts.json'; exported.value.save_as(exported_path)
+                exported_data = json.loads(exported_path.read_text(encoding='utf-8'))
+                self.assertEqual(exported_data['drafts'][0]['text'], '第一段草稿')
+                self.assertEqual(len(exported_data['drafts'][0]['images']), 1)
+                page.locator('#sheet .close').click()
                 page.locator('[data-reuse]').click()
                 expect(page.locator('#input')).to_have_value('完整未发送的问题')
                 expect(page.locator('#thumbs .thumb')).to_have_count(1)
@@ -439,6 +449,21 @@ class FrontendTests(IsolatedTest):
                 self.assertEqual(len(note_cache.lookup_many(['n'])), 1)
                 self.assertTrue(store.path(sid).exists())
                 self.assertTrue(agent._path('first').exists())
+                page.locator('#draftList .history-row').filter(has_text='新建话题').locator('input').check()
+                page.locator('#draftDelete').click()
+                expect(page.locator('#draftList')).not_to_contain_text('新建话题')
+                expect(page.locator('#input')).to_have_value('')
+                self.assertTrue(agent._path('created').exists())
+                page.evaluate("recordFailure('GET /api/test?token=private-query','Authorization: Bearer private-auth\\npassword=private-password')")
+                page.locator('#openDiagnostics').click()
+                expect(page.locator('#diagnosticCopy')).to_be_enabled()
+                report = page.locator('#diagnosticReport').inner_text()
+                for secret in ('private-query','private-auth','private-password'):
+                    self.assertNotIn(secret,report)
+                page.evaluate("copyText = async text => { window.copiedDiagnostic=text; return true; }")
+                page.locator('#diagnosticCopy').click()
+                expect(page.locator('#diagnosticResult')).to_have_text('已复制')
+                self.assertEqual(page.evaluate('window.copiedDiagnostic'),report)
                 self.assertFalse(errors, errors)
             finally:
                 browser.close()

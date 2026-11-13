@@ -11,7 +11,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import agent, paths, procutil, remote, scraper, settings, store, updater
 from .rendering import render_markdown as _md
@@ -57,7 +57,7 @@ async def remote_guard(request: Request, call_next):
     if not (remote.key_ok(from_query) or remote.key_ok(request.cookies.get(remote.COOKIE))):
         return HTMLResponse(LOCKED_PAGE, status_code=401)
     path = request.url.path
-    if path.startswith(("/api/backup", "/api/storage")):
+    if path.startswith(("/api/backup", "/api/storage", "/api/drafts", "/api/diagnostics")):
         return JSONResponse({"detail": "备份、导入和磁盘管理只能在电脑上进行"}, status_code=403)
     if path.startswith("/api/mobile") or (request.method != "GET" and path.startswith(REMOTE_DENY_POST)):
         return JSONResponse({"detail": "这个操作只能在电脑上进行"}, status_code=403)
@@ -211,6 +211,44 @@ def trash():
 def storage_usage():
     from . import storage
     return storage.usage()
+
+
+class DiagnosticReq(BaseModel):
+    operation: str = Field(default='', max_length=200)
+    error: str = Field(default='', max_length=6000)
+
+
+@app.post('/api/diagnostics')
+def diagnostic_report(req: DiagnosticReq):
+    from . import diagnostics
+    return {'report': diagnostics.report(req.operation, req.error)}
+
+
+@app.post('/api/drafts/export')
+async def export_drafts(request: Request):
+    import json
+    from starlette.concurrency import run_in_threadpool
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > 64 * 1024 * 1024:
+            raise HTTPException(413, '所选草稿超过 64 MB，请分批导出')
+    try:
+        value = json.loads(raw)
+        if value.get('format') != 'xhs-drafts' or value.get('version') != 1 or not isinstance(value.get('drafts'), list):
+            raise ValueError()
+        if len(value['drafts']) > 1000 or any(not isinstance(d, dict) or not isinstance(d.get('text'), str) or not isinstance(d.get('images'), list) for d in value['drafts']):
+            raise ValueError()
+    except (ValueError, AttributeError):
+        raise HTTPException(400, '草稿格式不正确')
+    def save():
+        folder = Path.home() / 'Downloads'; folder.mkdir(exist_ok=True)
+        name = '种草调研助手-草稿-' + time.strftime('%Y%m%d-%H%M%S') + '-' + str(time.time_ns() % 1000000) + '.json'
+        path = folder / name
+        path.write_bytes(json.dumps(value, ensure_ascii=False, indent=2).encode('utf-8'))
+        _last_export['path'] = path
+        return {'name': name, 'saved': str(path)}
+    return await run_in_threadpool(save)
 
 
 class CleanupReq(BaseModel):
