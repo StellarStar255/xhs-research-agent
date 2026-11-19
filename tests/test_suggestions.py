@@ -1,11 +1,14 @@
 """Offline checks for evolving recommendations; never call a real model."""
 import json
+import os
+from pathlib import Path
+import subprocess
 import threading
 import time
 from unittest.mock import patch
 
 from test_optimizations import IsolatedTest
-from xhs_reader import agent, settings, suggestions as sug
+from xhs_reader import agent, codex_backend, settings, suggestions as sug
 from xhs_reader.persistence import atomic_json
 
 
@@ -109,6 +112,29 @@ class SuggestionsTests(IsolatedTest):
                 self.assertTrue(result['failed'])
                 self.assertEqual(len(result['items']), 4)
             self.assertEqual(model.call_count, 1)
+
+    def test_codex_recommendations_find_node_with_desktop_path(self):
+        self.history()
+        settings.update(lambda s: s.update(backend='codex'))
+        cli_dir = self.tmp / 'homebrew' / 'bin'
+        cli = str(cli_dir / 'codex')
+        desktop_path = os.defpath
+
+        def run(cmd, *, env, **kwargs):
+            self.assertEqual(env['PATH'].split(os.pathsep), [str(cli_dir), *desktop_path.split(os.pathsep)])
+            if cmd[1:] == ['features', 'list']:
+                return subprocess.CompletedProcess(cmd, 0, stdout='shell_tool stable true\n')
+            self.assertEqual(cmd[1], 'exec')
+            self.assertIn('shell_tool', cmd)
+            Path(cmd[cmd.index('-o') + 1]).write_text(json.dumps(self.items()), encoding='utf-8')
+            return subprocess.CompletedProcess(cmd, 0)
+
+        with patch.dict(os.environ, PATH=desktop_path), \
+                patch.object(settings, 'find_codex', return_value=cli), \
+                patch.object(codex_backend, '_known_features', {}), \
+                patch.object(subprocess, 'run', side_effect=run) as spawn:
+            self.assertEqual(sug._generate(sug._context()[0]), self.items())
+            self.assertEqual(spawn.call_count, 2)
 
     def test_late_generation_cannot_restore_deleted_interests(self):
         chat = self.history()

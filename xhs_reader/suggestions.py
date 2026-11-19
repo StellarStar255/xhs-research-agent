@@ -219,14 +219,12 @@ def _generate(context, exclude=()):
             return _parse(r.choices[0].message.content)
         finally:
             cl.close()
-    env = paths.child_env()
-    env.pop("CLAUDECODE", None)
     if backend == "codex":
         codex = settings.find_codex()
         if not codex:
             return []
         out = paths.DATA_DIR / "suggestions.codex.txt"
-        from .codex_backend import _features_to_disable
+        from .codex_backend import _features_to_disable, cli_env
         cmd = [codex, "exec", "--skip-git-repo-check", "--ignore-user-config",
                "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"',
                "-c", 'web_search="disabled"', "-o", str(out)]
@@ -234,6 +232,8 @@ def _generate(context, exclude=()):
             cmd += ["--model", conf["codex_model"]]
         for feature in _features_to_disable(codex):
             cmd += ["--disable", feature]
+        env = cli_env(codex)
+        env.pop("CLAUDECODE", None)
         try:
             out.unlink(missing_ok=True)
             r = subprocess.run(cmd + [prompt], cwd=paths.DATA_DIR, env=env, capture_output=True, timeout=180)
@@ -243,6 +243,8 @@ def _generate(context, exclude=()):
     claude = settings.find_claude()
     if not claude:
         return []
+    env = paths.child_env()
+    env.pop("CLAUDECODE", None)
     # A small, cheap call: no tools, not saved as a session, the lighter model unless chosen otherwise.
     r = subprocess.run([claude, "-p", "--output-format", "text", "--no-session-persistence",
                         "--model", conf.get("claude_model") or "sonnet", "--tools", ""],

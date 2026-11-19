@@ -24,11 +24,19 @@ DISABLED_FEATURES = ["shell_tool", "browser_use", "browser_use_external", "compu
 _known_features = {}  # codex path -> set of feature names it knows
 
 
+def cli_env(codex):
+    env = paths.child_env()
+    # Homebrew's Codex launcher also needs Node on PATH when started from Finder.
+    env["PATH"] = os.pathsep.join([str(Path(codex).parent), env.get("PATH", "")])
+    return env
+
+
 def _features_to_disable(codex):
     """Only pass --disable for features this Codex version has (unknown names are an error)."""
     if codex not in _known_features:
         try:
-            out = subprocess.run([codex, "features", "list"], capture_output=True, text=True, timeout=20).stdout
+            out = subprocess.run([codex, "features", "list"], env=cli_env(codex),
+                                 capture_output=True, text=True, timeout=20).stdout
             _known_features[codex] = {line.split()[0] for line in out.splitlines() if line.strip()}
         except Exception:
             _known_features[codex] = set()
@@ -82,10 +90,8 @@ def start(chat, text, image_names, turn_id=""):
         prompt = "此前的对话：\n" + agent._transcript(chat) + "\n\n当前问题：\n" + prompt
     cmd.append(prompt)
 
-    env = paths.child_env()
-    env["PATH"] = os.pathsep.join([str(Path(codex).parent), env.get("PATH", "")])
     paths.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    proc = procutil.popen(cmd, cwd=paths.DATA_DIR, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+    proc = procutil.popen(cmd, cwd=paths.DATA_DIR, env=cli_env(codex), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=True, bufsize=1)
     return CodexRun(proc, _pump, chat["id"])
 
