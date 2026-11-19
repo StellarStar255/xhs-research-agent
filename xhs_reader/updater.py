@@ -34,6 +34,7 @@ API = os.environ.get("XHS_UPDATE_API", f"https://api.github.com/repos/{REPO}/rel
 APP_NAME = "XHS Research Agent"
 MAC, WINDOWS = sys.platform == "darwin", sys.platform == "win32"
 CHECK_EVERY = 6 * 3600
+BUSY_PHASES = ("checking", "downloading", "verifying", "installing")
 
 _lock = threading.Lock()
 _state = {"current": __version__, "latest": None, "available": False, "notes": "", "url": None,
@@ -47,7 +48,11 @@ def supported():
 
 def status():
     with _lock:
-        return {**_state, "supported": supported()}
+        return _status_locked()
+
+
+def _status_locked():
+    return {**_state, "supported": supported()}
 
 
 def _set(**kw):
@@ -73,7 +78,10 @@ def _asset_pattern():
 
 def check():
     """Ask GitHub for the latest release. Never raises; errors land in status()."""
-    _set(phase="checking", error=None)
+    with _lock:
+        if _state["phase"] in BUSY_PHASES:
+            return _status_locked()
+        _state.update(phase="checking", error=None)
     try:
         with _get(API) as r:
             rel = json.load(r)
@@ -81,8 +89,16 @@ def check():
         assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
         pattern = _asset_pattern()
         installer = next((u for n, u in assets.items() if pattern.search(n)), None)
+        available = _vtuple(latest) > _vtuple(__version__) and installer is not None
+        error = None
+        if WINDOWS and available:
+            try:
+                error = (paths.DATA_DIR / "updates" / latest / "install-error.txt").read_text(
+                    encoding="utf-8-sig").strip()
+            except OSError:
+                pass
         _set(latest=latest, notes=rel.get("body") or "", url=rel.get("html_url"),
-             available=_vtuple(latest) > _vtuple(__version__) and installer is not None,
+             available=available, error=error,
              installer=installer, sums=assets.get("SHA256SUMS.txt"),
              installer_name=next((n for n in assets if pattern.search(n)), None),
              checked_at=time.time(), phase="idle")
@@ -207,19 +223,87 @@ open "$APP"
 
 
 def _windows_install(setup, work):
-    exe = Path(sys.executable)
+    work = work.resolve()
+    exe = Path(sys.executable).resolve()
+    log = work / "install-helper.log"
+    ready = work / "install-ready"
+    failed = work / "install-error.txt"
+    ready.unlink(missing_ok=True)
+    failed.unlink(missing_ok=True)
+
+    def literal(value):
+        # In PowerShell single-quoted literals, smart quotes also act as delimiters.
+        return "'" + re.sub(r"['‘’]", lambda match: match[0] * 2, str(value)) + "'"
+
     ps = work / "install.ps1"
-    ps.write_text(f"""# Installed by the updater: wait for the app to quit, run the installer silently, relaunch.
-Start-Transcript -Append -Path '{paths.DATA_DIR / "update.log"}' | Out-Null
-Wait-Process -Id {os.getpid()} -Timeout 60 -ErrorAction SilentlyContinue
-Start-Process -Wait -FilePath '{setup}' -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS'
-Start-Process -FilePath '{exe}'
+    ps.write_text(f"""$ErrorActionPreference = 'Stop'
+$exe = {literal(exe)}
+$failure = {literal(failed)}
+$errorLog = {literal(log)}
+$appExited = $false
+function Save-Failure($message) {{
+    Write-Output $message
+    [IO.File]::WriteAllText($failure, "Windows 更新失败：$message。日志：" + $errorLog)
+}}
+try {{
+    $app = Get-Process -Id {os.getpid()}
+    # Open the process handle before telling the app it can exit.
+    $null = $app.Handle
+    Write-Output "Waiting for app PID $($app.Id)"
+    [IO.File]::WriteAllText({literal(ready)}, '')
+    if (-not $app.WaitForExit(60000)) {{
+        throw 'The app did not exit within 60 seconds.'
+    }}
+    $app.Dispose()
+    $appExited = $true
+    $setup = Start-Process -FilePath {literal(setup.resolve())} -Wait -PassThru -ArgumentList @(
+        '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS', '/NORESTARTAPPLICATIONS',
+        {literal(f'/DIR="{exe.parent}"')}, {literal(f'/LOG="{work / "inno-setup.log"}"')}
+    )
+    Write-Output "Installer exit code: $($setup.ExitCode)"
+    if ($setup.ExitCode -ne 0) {{
+        throw "Installer exit code: $($setup.ExitCode)"
+    }}
+}} catch {{
+    Save-Failure $_.Exception.Message
+}}
+if ($appExited) {{
+    try {{
+        $env:PYINSTALLER_RESET_ENVIRONMENT = '1'
+        Start-Process -FilePath $exe -WorkingDirectory {literal(exe.parent)}
+        Write-Output 'App relaunched.'
+    }} catch {{
+        if (Test-Path -LiteralPath $failure) {{
+            Write-Output $_.Exception.Message
+        }} else {{
+            Save-Failure $_.Exception.Message
+        }}
+    }}
+}}
+if (Test-Path -LiteralPath $failure) {{ exit 1 }}
 """, encoding="utf-8-sig")
-    subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-                      "-File", str(ps)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, close_fds=True,
-                     creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
-    return True
+    powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    # DETACHED_PROCESS combined with PowerShell's -WindowStyle can silently skip
+    # the script. CREATE_NO_WINDOW hides the console without that combination.
+    try:
+        with log.open("wb") as output:
+            helper = subprocess.Popen([str(powershell), "-NoProfile", "-NonInteractive",
+                                       "-ExecutionPolicy", "Bypass", "-File", str(ps)],
+                                      cwd=work, stdin=subprocess.DEVNULL, stdout=output,
+                                      stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW)
+    except OSError as e:
+        raise RuntimeError(f"Windows 更新助手未能启动：{e}。日志：{log}") from e
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if helper.poll() is not None:
+            break
+        if ready.exists():
+            return helper
+        time.sleep(0.1)
+    if helper.poll() is None:
+        helper.kill()
+        helper.wait()
+    raise RuntimeError(f"Windows 更新助手未能启动，应用仍在运行。日志：{log}")
 
 
 def start(on_ready_to_quit):
@@ -227,18 +311,19 @@ def start(on_ready_to_quit):
     Calls on_ready_to_quit() once the helper is waiting for us to exit."""
     if not supported():
         raise RuntimeError("只有安装版支持自动更新；源码运行请用 git pull")
-    st = status()
-    if not st["available"]:
-        raise RuntimeError("没有可用的新版本")
-    if st["phase"] in ("downloading", "verifying", "installing"):
-        return
+    with _lock:
+        if _state["phase"] in BUSY_PHASES:
+            return
+        if not _state["available"]:
+            raise RuntimeError("没有可用的新版本")
+        st = _status_locked()
+        _state.update(phase="downloading", progress=0, error=None)
 
     def run():
         try:
             work = paths.DATA_DIR / "updates" / st["latest"]
             work.mkdir(parents=True, exist_ok=True)
             dest = work / st["installer_name"]
-            _set(phase="downloading", progress=0, error=None)
             _download(st["installer"], dest)
             _set(phase="verifying")
             expected = _expected_sha(st.get("sums"), st["installer_name"])
@@ -247,7 +332,17 @@ def start(on_ready_to_quit):
             if WINDOWS and not expected:
                 raise RuntimeError("这个版本没有提供校验文件，为了安全不自动安装，请到 Release 页面手动下载")
             _set(phase="installing")
-            if (_mac_install if MAC else _windows_install)(dest, work):
+            if WINDOWS:
+                helper = _windows_install(dest, work)
+                on_ready_to_quit()
+                exit_code = helper.wait()
+                if exit_code:
+                    try:
+                        error = (work / "install-error.txt").read_text(encoding="utf-8-sig").strip()
+                    except OSError:
+                        error = f"Windows 更新助手退出（{exit_code}）。日志：{work / 'install-helper.log'}"
+                    _set(phase="error", error=error)
+            elif _mac_install(dest, work):
                 on_ready_to_quit()
         except Exception as e:
             _set(phase="error", error=str(e))
