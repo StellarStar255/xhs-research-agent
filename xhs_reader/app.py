@@ -478,7 +478,10 @@ def _start_server(port, listener):
     agent.recover()
     from . import updater
     updater.check_periodically()
+    # A closed browser can leave a local connection pending on Windows.
+    # Bound the wait so it cannot stall exit or an installer handoff.
     config = uvicorn.Config(server.app, host="127.0.0.1", port=port, log_level="warning",
+                            timeout_graceful_shutdown=5,
                             log_config=None if paths.FROZEN else uvicorn.config.LOGGING_CONFIG)
     server.server = uvicorn.Server(config)
     from . import remote

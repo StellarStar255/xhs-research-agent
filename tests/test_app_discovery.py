@@ -73,6 +73,7 @@ class AppDiscoveryTests(unittest.TestCase):
                 req = urllib.request.Request(f'http://127.0.0.1:{port + 1}/api/shutdown', method='POST')
                 with app._loopback.open(req, timeout=3) as response:
                     self.assertEqual(response.status, 200)
+                    # Close with the response body unread, as a disappearing UI can do.
                 for child in processes:
                     self.assertEqual(child.wait(10), 0)
             finally:

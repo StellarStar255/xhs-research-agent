@@ -76,6 +76,16 @@ def _asset_pattern():
     return re.compile(r"-windows-x64-setup\.exe$")
 
 
+def _update_directory(version):
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise ValueError("发布版本号无效")
+    root = paths.DATA_DIR / "updates"
+    work = root / version
+    if paths.is_redirected(root) or paths.is_redirected(work):
+        raise ValueError("更新目录是符号链接或目录联接，无法安装")
+    return work
+
+
 def check():
     """Ask GitHub for the latest release. Never raises; errors land in status()."""
     with _lock:
@@ -85,22 +95,25 @@ def check():
     try:
         with _get(API) as r:
             rel = json.load(r)
-        latest = rel["tag_name"].lstrip("v")
+        latest = rel["tag_name"].removeprefix("v")
+        work = _update_directory(latest)
         assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
         pattern = _asset_pattern()
-        installer = next((u for n, u in assets.items() if pattern.search(n)), None)
-        available = _vtuple(latest) > _vtuple(__version__) and installer is not None
+        name = next((n for n in assets if re.fullmatch(r"[A-Za-z0-9._-]+", n) and pattern.search(n)), None)
+        installer = assets.get(name)
+        available = (_vtuple(latest) > _vtuple(__version__) and bool(installer)
+                     and not rel.get("draft") and not rel.get("prerelease"))
         error = None
         if WINDOWS and available:
             try:
-                error = (paths.DATA_DIR / "updates" / latest / "install-error.txt").read_text(
+                error = (work / "install-error.txt").read_text(
                     encoding="utf-8-sig").strip()
             except OSError:
                 pass
         _set(latest=latest, notes=rel.get("body") or "", url=rel.get("html_url"),
              available=available, error=error,
              installer=installer, sums=assets.get("SHA256SUMS.txt"),
-             installer_name=next((n for n in assets if pattern.search(n)), None),
+             installer_name=name,
              checked_at=time.time(), phase="idle")
     except Exception as e:
         _set(phase="idle", error=f"检查更新失败：{e}", checked_at=time.time())
@@ -132,7 +145,9 @@ def _download(url, dest):
                 f.write(chunk)
                 done += len(chunk)
                 if total:
-                    _set(progress=round(done * 100 / total))
+                    _set(progress=min(100, round(done * 100 / total)))
+        if total and done != total:
+            raise RuntimeError("安装包下载不完整，请稍后重试")
 
 
 def _sha256(path):
@@ -149,7 +164,7 @@ def _expected_sha(sums_url, name):
     with _get(sums_url) as r:
         for line in r.read().decode().splitlines():
             parts = line.split()
-            if len(parts) == 2 and parts[1].lstrip("*") == name:
+            if len(parts) == 2 and re.fullmatch(r"[a-fA-F0-9]{64}", parts[0]) and parts[1].lstrip("*") == name:
                 return parts[0].lower()
     return None
 
@@ -306,6 +321,24 @@ if (Test-Path -LiteralPath $failure) {{ exit 1 }}
     raise RuntimeError(f"Windows 更新助手未能启动，应用仍在运行。日志：{log}")
 
 
+def _prepare_installer(st, work):
+    name = st["installer_name"]
+    expected = _expected_sha(st.get("sums"), name)
+    if WINDOWS and not expected:
+        raise RuntimeError("这个版本没有提供有效的校验文件，请到 Release 页面手动下载")
+    work.mkdir(parents=True, exist_ok=True)
+    dest = work / name
+    # Expose the executable name only after the complete download passes verification.
+    with tempfile.TemporaryDirectory(prefix="download-", dir=work) as staging:
+        partial = Path(staging) / "installer.part"
+        _download(st["installer"], partial)
+        _set(phase="verifying")
+        if expected and _sha256(partial) != expected:
+            raise RuntimeError("下载的文件校验失败（SHA256 不一致），已删除，请稍后重试")
+        partial.replace(dest)
+    return dest
+
+
 def start(on_ready_to_quit):
     """Download + verify + hand over to the installer helper, in the background.
     Calls on_ready_to_quit() once the helper is waiting for us to exit."""
@@ -321,16 +354,8 @@ def start(on_ready_to_quit):
 
     def run():
         try:
-            work = paths.DATA_DIR / "updates" / st["latest"]
-            work.mkdir(parents=True, exist_ok=True)
-            dest = work / st["installer_name"]
-            _download(st["installer"], dest)
-            _set(phase="verifying")
-            expected = _expected_sha(st.get("sums"), st["installer_name"])
-            if expected and _sha256(dest) != expected:
-                raise RuntimeError("下载的文件校验失败（SHA256 不一致），已删除，请稍后重试")
-            if WINDOWS and not expected:
-                raise RuntimeError("这个版本没有提供校验文件，为了安全不自动安装，请到 Release 页面手动下载")
+            work = _update_directory(st["latest"])
+            dest = _prepare_installer(st, work)
             _set(phase="installing")
             if WINDOWS:
                 helper = _windows_install(dest, work)
@@ -346,9 +371,4 @@ def start(on_ready_to_quit):
                 on_ready_to_quit()
         except Exception as e:
             _set(phase="error", error=str(e))
-            try:
-                if "dest" in locals() and "校验失败" in str(e):
-                    dest.unlink(missing_ok=True)
-            except OSError:
-                pass
     threading.Thread(target=run, daemon=True).start()

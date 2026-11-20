@@ -4,8 +4,75 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import psutil
+
+from xhs_reader import updater
+
+
+class UpdateDownloadTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.object(updater.paths, "DATA_DIR", self.tmp))
+        self.enterContext(patch.object(updater, "WINDOWS", True))
+        self.enterContext(patch.object(updater, "MAC", False))
+        self.enterContext(patch.object(updater, "_state", {"phase": "idle"}))
+        self.name = "XHS-Research-Agent-9.9.9-windows-x64-setup.exe"
+        self.release = {"installer_name": self.name, "sums": "sums", "installer": "setup"}
+        self.work = updater._update_directory("9.9.9")
+        self.content = b"complete installer"
+        self.digest = hashlib.sha256(self.content).hexdigest()
+
+    def response(self, content, size=None):
+        response = io.BytesIO(content)
+        response.headers = {"Content-Length": str(len(content) if size is None else size)}
+        return response
+
+    def test_missing_or_malformed_windows_checksum_stops_before_download(self):
+        for data in (b"", f"invalid *{self.name}\n".encode()):
+            with self.subTest(data=data), patch.object(updater, "_get", return_value=self.response(data)) as fetch:
+                with self.assertRaisesRegex(RuntimeError, "有效的校验文件"):
+                    updater._prepare_installer(self.release, self.work)
+                fetch.assert_called_once_with("sums")
+                self.assertFalse(self.work.exists())
+
+    def test_incomplete_or_mismatched_download_leaves_no_partial_executable(self):
+        for content, size, message in ((b"short", len(self.content), "下载不完整"),
+                                       (b"wrong", 5, "SHA256")):
+            responses = [self.response(f"{self.digest} *{self.name}\n".encode()),
+                         self.response(content, size)]
+            with self.subTest(message=message), patch.object(updater, "_get", side_effect=responses):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    updater._prepare_installer(self.release, self.work)
+                self.assertEqual(list(self.work.iterdir()), [])
+
+    def test_successful_retry_replaces_installer_only_after_verification(self):
+        self.work.mkdir(parents=True)
+        dest = self.work / self.name
+        dest.write_bytes(b"previous verified installer")
+
+        def fetch(url, **kwargs):
+            self.assertEqual(dest.read_bytes(), b"previous verified installer")
+            if url == "sums":
+                return self.response(f"{self.digest.upper()} *{self.name}\n".encode())
+            self.assertEqual(url, "setup")
+            return self.response(self.content)
+
+        with patch.object(updater, "_get", side_effect=fetch):
+            self.assertEqual(updater._prepare_installer(self.release, self.work), dest)
+        self.assertEqual(dest.read_bytes(), self.content)
+        self.assertEqual(list(self.work.iterdir()), [dest])
+
+    def test_release_check_ignores_path_like_assets_and_prereleases(self):
+        asset = {"name": self.name, "browser_download_url": "setup"}
+        for assets, prerelease in (([{**asset, "name": "../" + self.name}], False),
+                                   ([asset], True), ([asset], False)):
+            payload = json.dumps({"tag_name": "v9.9.9", "assets": assets,
+                                  "prerelease": prerelease}).encode()
+            with self.subTest(assets=assets, prerelease=prerelease), \
+                 patch.object(updater, "_get", return_value=self.response(payload)):
+                self.assertEqual(updater.check()["available"], assets == [asset] and not prerelease)
 
 
 @unittest.skipUnless(sys.platform == "win32", "runs the Windows PowerShell update helper")
@@ -68,3 +135,6 @@ print(helper.pid)
                 while not marker.exists() and time.monotonic() < deadline:
                     time.sleep(0.1)
                 self.assertEqual(marker.read_text().strip(), "1")
+import hashlib
+import io
+import json
