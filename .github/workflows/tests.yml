@@ -21,3 +21,8 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install -r requirements.txt
       - run: python -m unittest discover -s tests -v
+      - name: Windows browser regression tests
+        if: runner.os == 'Windows'
+        env:
+          XHS_BROWSER_TEST: "1"
+        run: python -m unittest discover -s tests -p test_frontend.py -v

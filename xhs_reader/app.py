@@ -17,12 +17,15 @@ import webbrowser
 from . import paths
 
 DEFAULT_PORT = 8766
+# Instance discovery and shutdown are loopback-only, including when the user
+# enables an OS or environment proxy for the model providers.
+_loopback = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def _ping(port):
     """The /api/ping reply if one of our instances is on this port, else None."""
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/ping", timeout=0.7) as r:
+        with _loopback.open(f"http://127.0.0.1:{port}/api/ping", timeout=0.7) as r:
             info = json.load(r)
         return info if info.get("app") == paths.APP_ID else None
     except Exception:
@@ -45,8 +48,9 @@ def _replace_older(port, info):
     if _vtuple(info.get("version")) >= _vtuple(__version__):
         return False
     try:
-        urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/api/shutdown", method="POST"),
-                               timeout=3).read()
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/shutdown", method="POST")
+        with _loopback.open(req, timeout=3) as response:
+            response.read()
     except Exception:
         return False
     for _ in range(50):  # wait for it to release the port

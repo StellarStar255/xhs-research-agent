@@ -4,11 +4,10 @@ import json
 import logging
 import random
 import re
-import subprocess
 import threading
 import time
 
-from . import agent, paths, settings
+from . import agent, paths, procutil, settings
 
 CACHE = paths.DATA_DIR / "suggestions.json"
 MAX_AGE = 12 * 3600
@@ -236,7 +235,8 @@ def _generate(context, exclude=()):
         env.pop("CLAUDECODE", None)
         try:
             out.unlink(missing_ok=True)
-            r = subprocess.run(cmd + [prompt], cwd=paths.DATA_DIR, env=env, capture_output=True, timeout=180)
+            r = procutil.run(cmd + ["-"], input=prompt, cwd=paths.DATA_DIR, env=env,
+                             capture_output=True, text=True, timeout=180)
             return _parse(out.read_text(encoding="utf-8")) if r.returncode == 0 and out.exists() else []
         finally:
             out.unlink(missing_ok=True)
@@ -246,7 +246,7 @@ def _generate(context, exclude=()):
     env = paths.child_env()
     env.pop("CLAUDECODE", None)
     # A small, cheap call: no tools, not saved as a session, the lighter model unless chosen otherwise.
-    r = subprocess.run([claude, "-p", "--output-format", "text", "--no-session-persistence",
+    r = procutil.run([claude, "-p", "--output-format", "text", "--no-session-persistence",
                         "--model", conf.get("claude_model") or "sonnet", "--tools", ""],
                        input=prompt, cwd=paths.DATA_DIR, env=env, capture_output=True, text=True, timeout=180)
     return _parse(r.stdout)

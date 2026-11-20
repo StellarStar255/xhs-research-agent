@@ -10,6 +10,7 @@ Follow-up turns continue the Codex thread with `codex exec resume <thread_id>`.
 import json
 import os
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
 
@@ -35,7 +36,7 @@ def _features_to_disable(codex):
     """Only pass --disable for features this Codex version has (unknown names are an error)."""
     if codex not in _known_features:
         try:
-            out = subprocess.run([codex, "features", "list"], env=cli_env(codex),
+            out = procutil.run([codex, "features", "list"], env=cli_env(codex),
                                  capture_output=True, text=True, timeout=20).stdout
             _known_features[codex] = {line.split()[0] for line in out.splitlines() if line.strip()}
         except Exception:
@@ -44,8 +45,8 @@ def _features_to_disable(codex):
 
 
 def _toml(value):
-    # JSON strings/arrays are valid TOML basic strings/arrays (ensure_ascii → \\uXXXX escapes).
-    return json.dumps(value)
+    # JSON's surrogate-pair escapes for non-BMP characters are invalid in TOML.
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 CodexRun = agent.ClaudeRun
@@ -88,11 +89,14 @@ def start(chat, text, image_names, turn_id=""):
     prompt = text or agent.DEFAULT_IMAGE_PROMPT
     if not thread and len(chat.get("messages", [])) > 2:
         prompt = "此前的对话：\n" + agent._transcript(chat) + "\n\n当前问题：\n" + prompt
-    cmd.append(prompt)
-
     paths.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    proc = procutil.popen(cmd, cwd=paths.DATA_DIR, env=cli_env(codex), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, text=True, bufsize=1)
+    # CreateProcess limits the entire command line to 32,767 UTF-16 code units.
+    # Redirect from a file so long prompts need neither argv space nor a pipe writer.
+    with tempfile.TemporaryFile() as stdin:
+        stdin.write(prompt.encode("utf-8"))
+        stdin.seek(0)
+        proc = procutil.popen(cmd + ["-"], cwd=paths.DATA_DIR, env=cli_env(codex), stdin=stdin,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
     return CodexRun(proc, _pump, chat["id"])
 
 

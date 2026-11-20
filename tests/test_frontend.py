@@ -142,7 +142,7 @@ class FrontendTests(IsolatedTest):
                 page.mouse.up()
                 self.assertEqual(page.locator('aside').evaluate('(el) => el.getBoundingClientRect().width'), 360)
                 self.assertEqual(page.evaluate("localStorage.getItem('sidebarWidth')"), '360')
-                page.screenshot(path='/private/tmp/xhs-search-improvements.png')
+                page.screenshot(path=self.tmp / 'xhs-search-improvements.png')
                 page.evaluate("window.oldNode = document.querySelector('#thread .msg'); window.oldAnswer = document.querySelectorAll('#thread .msg')[1]")
                 agent.update('test-chat', lambda c,m: m.update(draft='新增文字 <img src=x onerror="window.injected=1">'))
                 page.evaluate("async () => { await openChat('test-chat'); clearTimeout(pollTimer); }")
@@ -369,8 +369,6 @@ class FrontendTests(IsolatedTest):
                 self.assertTrue(metrics['first_preserved'])
                 self.assertLessEqual(metrics['mutations'], 10)
                 (self.tmp / 'performance.json').write_text(json.dumps(metrics))
-                from pathlib import Path
-                Path('/private/tmp/xhs-history-performance.json').write_text(json.dumps(metrics))
                 self.assertFalse(errors, errors)
             finally:
                 context.close(); browser.close()
@@ -613,7 +611,7 @@ class FrontendTests(IsolatedTest):
                 expect(page.locator('#backupResult')).to_contain_text('已导入 1 个对话')
                 expect(page.locator('#backupResult')).to_contain_text('跳过 1 个已有对话')
                 page.wait_for_selector('[data-id="test-chat"]')
-                page.screenshot(path='/private/tmp/xhs-history-management.png')
+                page.screenshot(path=self.tmp / 'xhs-history-management.png')
                 page.locator('#sheet .close').click()
                 page.locator('[data-id="test-chat"]').click()
                 page.wait_for_function("lastChat?.id === 'test-chat'")
@@ -635,7 +633,7 @@ class FrontendTests(IsolatedTest):
                 page.locator('#menuBtn').click()
                 page.wait_for_function("Math.abs(document.querySelector('aside').getBoundingClientRect().left) < 1")
                 self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'), 390)
-                page.screenshot(path='/private/tmp/xhs-history-mobile.png')
+                page.screenshot(path=self.tmp / 'xhs-history-mobile.png')
                 self.assertFalse(errors, errors)
             finally:
                 browser.close()

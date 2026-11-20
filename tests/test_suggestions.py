@@ -125,6 +125,9 @@ class SuggestionsTests(IsolatedTest):
             if cmd[1:] == ['features', 'list']:
                 return subprocess.CompletedProcess(cmd, 0, stdout='shell_tool stable true\n')
             self.assertEqual(cmd[1], 'exec')
+            self.assertEqual(cmd[-1], '-')
+            self.assertTrue(kwargs['input'])
+            self.assertEqual(kwargs['encoding'], 'utf-8')
             self.assertIn('shell_tool', cmd)
             Path(cmd[cmd.index('-o') + 1]).write_text(json.dumps(self.items()), encoding='utf-8')
             return subprocess.CompletedProcess(cmd, 0)

@@ -7,8 +7,7 @@ import psutil
 WINDOWS = sys.platform == "win32"
 
 
-def popen(cmd, **kw):
-    """Popen in its own process group/session, so the whole tree can be stopped."""
+def _background_options(kw):
     if WINDOWS:
         kw["creationflags"] = kw.get("creationflags", 0) | subprocess.CREATE_NEW_PROCESS_GROUP \
             | subprocess.CREATE_NO_WINDOW
@@ -17,7 +16,20 @@ def popen(cmd, **kw):
     if kw.get("text"):
         kw.setdefault("encoding", "utf-8")
         kw.setdefault("errors", "replace")
+
+
+def popen(cmd, **kw):
+    """Popen in its own process group/session, so the whole tree can be stopped."""
+    _background_options(kw)
     return subprocess.Popen(cmd, **kw)
+
+
+def run(cmd, **kw):
+    """Run a CLI in the background with the same console and encoding settings."""
+    _background_options(kw)
+    if kw.get("input") is None:
+        kw.setdefault("stdin", subprocess.DEVNULL)
+    return subprocess.run(cmd, **kw)
 
 
 def kill_tree(proc, timeout=5):

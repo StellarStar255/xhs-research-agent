@@ -1,11 +1,14 @@
 import os
+import subprocess
+import sys
+import tomllib
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from test_optimizations import IsolatedTest
-from xhs_reader import agent, codex_backend, llm, server, settings
+from xhs_reader import agent, codex_backend, llm, paths, server, settings
 from xhs_reader.persistence import atomic_json
 
 
@@ -122,12 +125,39 @@ class ModelSelectionTests(IsolatedTest):
             {'role': 'user', 'text': '接着问'},
             {'role': 'assistant', 'parts': []},
         ])
-        with patch.object(settings, 'find_codex', return_value='codex'), patch.object(codex_backend, '_features_to_disable', return_value=[]), patch.object(codex_backend.procutil, 'popen') as spawn:
-            codex_backend.start(chat, '接着问', [], 'turn')
-            prompt = spawn.call_args.args[0][-1]
-            self.assertIn('之前的提问', prompt)
-            self.assertIn('之前的回答', prompt)
-            self.assertTrue(prompt.endswith('接着问'))
-            chat['codex_thread'] = 'existing-thread'
-            codex_backend.start(chat, '接着问', [], 'turn')
-            self.assertEqual(spawn.call_args.args[0][-1], '接着问')
+        real_popen = codex_backend.procutil.popen
+
+        def echo_stdin(cmd, **kwargs):
+            self.assertEqual(cmd[-1], '-')
+            self.assertLess(len(subprocess.list2cmdline(cmd)), 32767)
+            return real_popen([sys.executable, '-c',
+                               'import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())'], **kwargs)
+
+        question = '-开头的长追问😀' * 6000
+        with patch.object(settings, 'find_codex', return_value='codex'), \
+             patch.object(codex_backend, '_features_to_disable', return_value=[]), \
+             patch.object(codex_backend.procutil, 'popen', side_effect=echo_stdin):
+            for thread in (None, 'existing-thread'):
+                chat['codex_thread'] = thread
+                run = codex_backend.start(chat, question, [], 'turn')
+                prompt, error = run.proc.communicate(timeout=10)
+                self.assertEqual(run.proc.returncode, 0, error)
+                if thread:
+                    self.assertEqual(prompt, question)
+                else:
+                    self.assertIn('之前的提问', prompt)
+                    self.assertIn('之前的回答', prompt)
+                    self.assertTrue(prompt.endswith(question))
+
+    def test_codex_mcp_configuration_accepts_unicode_windows_paths(self):
+        directory = 'C:\\Users\\中文😀\\Project Data'
+        value = {'path': directory, 'args': ['第一行\n第二行', '\x7f']}
+        self.assertEqual(tomllib.loads(f'path={codex_backend._toml(value["path"])}\n'
+                                       f'args={codex_backend._toml(value["args"])}'), value)
+
+    def test_relative_data_override_stays_absolute_for_child_processes(self):
+        with patch.dict(os.environ, {'XHS_DATA_DIR': 'tmp/relative-xhs-data'}):
+            data_dir = paths._data_dir()
+        with patch.object(paths, 'DATA_DIR', data_dir):
+            self.assertEqual(paths.child_env()['XHS_DATA_DIR'], str(data_dir))
+            self.assertEqual(data_dir, Path.cwd() / 'tmp' / 'relative-xhs-data')

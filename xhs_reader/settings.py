@@ -12,6 +12,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from . import procutil
 from .paths import DATA_DIR
 from .persistence import atomic_json, file_lock, read_json, quarantine
 
@@ -49,7 +50,7 @@ def claude_efforts():
         return []
     if cli not in _effort_options:
         try:
-            help_text = subprocess.run([cli, "--help"], capture_output=True, text=True, timeout=10).stdout
+            help_text = procutil.run([cli, "--help"], capture_output=True, text=True, timeout=10).stdout
             section = help_text.split("--effort", 1)[1].split("\n  --", 1)[0]
             _effort_options[cli] = [v for v in CLAUDE_EFFORTS if v and re.search(rf"\b{v}\b", section)]
         except (OSError, subprocess.TimeoutExpired, IndexError):
@@ -105,7 +106,7 @@ def _windows_cli_candidates(name):
 
 def _cli_version(path):
     try:
-        out = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=15).stdout
+        out = procutil.run([path, "--version"], capture_output=True, text=True, timeout=15).stdout
         return tuple(int(x) for x in re.findall(r"\d+", out)[:3])
     except Exception:
         return ()

@@ -17,7 +17,7 @@ ROOT = PKG_DIR.parent  # repo root (source) or the bundle's internal dir (frozen
 
 def _data_dir():
     if os.environ.get("XHS_DATA_DIR"):
-        return Path(os.environ["XHS_DATA_DIR"]).expanduser()
+        return Path(os.environ["XHS_DATA_DIR"]).expanduser().resolve()
     if FROZEN:
         # A dot-directory rather than ~/Library/Application Support: the Claude Code
         # backend needs a space-free path for its command permission rule.
