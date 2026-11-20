@@ -94,12 +94,13 @@ def check(previous, setup, expected_exe, root):
             self.end_headers()
             self.wfile.write(output)
 
-    with socket.socket() as port_probe:
+    with socket.socket() as port_probe, socket.socket() as debug_probe:
         port_probe.bind(("127.0.0.1", 0))
         port = port_probe.getsockname()[1]
-    with socket.socket() as port_probe:
-        port_probe.bind(("127.0.0.1", 0))
-        debug_port = port_probe.getsockname()[1]
+        debug_probe.bind(("127.0.0.1", 0))
+        debug_port = debug_probe.getsockname()[1]
+        fixture = ThreadingHTTPServer(("127.0.0.1", 0), ReleaseFixture)
+    print(f"Ports: app={port}, WebView2={debug_port}, update fixture={fixture.server_port}")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     debug_url = f"http://127.0.0.1:{debug_port}"
 
@@ -115,7 +116,7 @@ def check(previous, setup, expected_exe, root):
             return json.load(response)
 
     work = data / "updates" / version
-    with ThreadingHTTPServer(("127.0.0.1", 0), ReleaseFixture) as fixture:
+    with fixture:
         thread = threading.Thread(target=fixture.serve_forever, daemon=True)
         thread.start()
         env = dict(os.environ, XHS_DATA_DIR=str(data), XHS_PORT=str(port),
@@ -158,7 +159,7 @@ def check(previous, setup, expected_exe, root):
             original.wait(timeout=10)
             fixture.shutdown()
             thread.join()
-            for log in (work / "install-helper.log", work / "install-error.txt"):
+            for log in (data / "app.log", work / "install-helper.log", work / "install-error.txt"):
                 if log.exists():
                     print(log.read_text(encoding="utf-8-sig", errors="replace"))
 
