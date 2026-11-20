@@ -115,10 +115,11 @@ def check(previous, setup, expected_exe, root):
             if original.wait(timeout=90):
                 raise RuntimeError("Previous app exited with an error during update")
 
-            def upgraded():
-                return sha256(exe) == expected_hash and api("/api/ping")
-
-            new = wait_for("the updated app to relaunch on the same port", upgraded, 150)
+            # Opening the EXE before the installer finishes can cause Windows
+            # Restart Manager to close this test process along with the app.
+            new = wait_for("the updated app to relaunch on the same port", lambda: api("/api/ping"), 150)
+            if sha256(exe) != expected_hash:
+                raise RuntimeError("Relaunch used the old binary or a different build")
             assert new["app"] == "xhs-research-agent"
             assert api("/api/chats/upgrade-fixture")["title"] == record["title"]
             assert api("/api/notice")["accepted"]
