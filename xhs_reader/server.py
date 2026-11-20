@@ -286,6 +286,8 @@ def purge_chat(cid: str):
         agent.purge(cid)
     except (ValueError, FileNotFoundError):
         raise HTTPException(404, "回收站中找不到这个对话")
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
     return {"ok": True}
 
 

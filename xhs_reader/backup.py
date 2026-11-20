@@ -1,14 +1,15 @@
 """Portable history backups. Imports are validated, additive, and never overwrite data."""
 import json
 import math
+import os
 import re
 import shutil
 import stat
 import tempfile
 import zipfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from . import agent, store
+from . import agent, paths, store
 
 MAX_ARCHIVE = 256 * 1024 * 1024
 MAX_EXPANDED = 1024 * 1024 * 1024
@@ -28,9 +29,7 @@ def export_to(dest):
         with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("manifest.json", json.dumps(MANIFEST))
             for prefix, root in (("chats", agent.CHATS_DIR), ("research", store.RESEARCH_DIR)):
-                for f in sorted(root.rglob("*")):
-                    if not f.is_file() or f.is_symlink() or any((root / p).is_symlink() for p in f.relative_to(root).parents):
-                        continue
+                for f in sorted(paths.iter_local_files(root)):
                     name = prefix + "/" + f.relative_to(root).as_posix()
                     if not _allowed(name):
                         continue
@@ -48,6 +47,8 @@ def _allowed(name):
     if "\\" in name or p.as_posix() != name or p.is_absolute() or any(x in (".", "..") for x in name.split("/")):
         return False
     parts = p.parts
+    if any(PureWindowsPath(part).is_reserved() for part in parts):
+        return False
     safe_id = lambda s: bool(re.fullmatch(r"[\w-]+", s))
     if name == "manifest.json":
         return True
@@ -81,9 +82,10 @@ def import_from(source, preview=False):
                     raise ValueError("备份解压后超过上限")
                 names = set()
                 for i in entries:
-                    if i.filename in names or not _allowed(i.filename) or stat.S_ISLNK(i.external_attr >> 16) or i.flag_bits & 1:
+                    key = os.path.normcase(i.filename)
+                    if key in names or not _allowed(i.filename) or stat.S_ISLNK(i.external_attr >> 16) or i.flag_bits & 1:
                         raise ValueError("备份包含不支持的路径、重复文件或加密文件")
-                    names.add(i.filename)
+                    names.add(key)
                 if json.loads(z.read("manifest.json")) != MANIFEST:
                     raise ValueError("不支持的备份格式")
                 for i in entries:
@@ -166,12 +168,13 @@ def import_from(source, preview=False):
                 trashed = f.name == "record.json"
                 cid = f.parent.name if trashed else f.stem
                 target = agent.CHATS_DIR / ".trash" / cid if trashed else agent._path(cid)
-                if cid in seen or agent._path(cid).exists() or agent.image_dir(cid).exists() or (agent.CHATS_DIR / ".trash" / cid).exists():
+                key = os.path.normcase(cid)
+                if key in seen or agent._path(cid).exists() or agent.image_dir(cid).exists() or (agent.CHATS_DIR / ".trash" / cid).exists():
                     result["skipped"] += 1
                     if len(duplicates) < 10:
                         duplicates.append(json.loads(f.read_text(encoding="utf-8"))["title"])
                     continue
-                seen.add(cid)
+                seen.add(key)
                 if not trashed and f.with_suffix("").exists():
                     plan.append((f.with_suffix(""), agent.image_dir(cid)))
                 plan.append((f.parent if trashed else f, target))
@@ -180,6 +183,11 @@ def import_from(source, preview=False):
                 if not (store.RESEARCH_DIR / folder.name).exists():
                     plan.append((folder, store.RESEARCH_DIR / folder.name))
                     result["research"] += 1
+            roots = {target.parent for _, target in plan}
+            if agent.CHATS_DIR / ".trash" in roots:
+                roots.add(agent.CHATS_DIR)
+            if any(paths.is_redirected(root) for root in roots):
+                raise RuntimeError("备份目标目录是符号链接或目录联接，无法导入")
             if preview:
                 return {**result, "conversations": len(records), "duplicates": duplicates,
                         "attachments": sum(PurePosixPath(i.filename).suffix.lower() in (".jpg", ".jpeg", ".png", ".webp", ".gif") for i in entries),

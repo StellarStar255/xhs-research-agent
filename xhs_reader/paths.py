@@ -7,6 +7,7 @@ XHS_DATA_DIR overrides the data directory in both cases.
 """
 import hashlib
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -33,6 +34,29 @@ def data_profile():
     """Opaque local instance identity without exposing the user's data path."""
     canonical = os.path.normcase(str(DATA_DIR.resolve()))
     return hashlib.sha256(os.fsencode(canonical)).hexdigest()
+
+
+def is_redirected(path):
+    """Detect symlinks and Windows junctions without resolving their targets."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    return stat.S_ISLNK(info.st_mode) or (
+        os.name == "nt" and info.st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT)
+
+
+def iter_local_files(root):
+    """Walk a data subtree while pruning symlink and junction directories."""
+    if is_redirected(root):
+        return
+    for folder, dirs, files in os.walk(root):
+        parent = Path(folder)
+        dirs[:] = [name for name in dirs if not is_redirected(parent / name)]
+        for name in files:
+            file = parent / name
+            if not is_redirected(file) and file.is_file():
+                yield file
 
 
 def downloads_dir():

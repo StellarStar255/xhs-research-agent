@@ -1,6 +1,7 @@
 """History lifecycle, portable backups, and search filters; no real user data."""
 import json
 import asyncio
+import os
 from pathlib import Path
 import stat
 import unittest
@@ -161,6 +162,15 @@ class HistoryManagementTests(IsolatedTest):
                 z.writestr(name, content)
         return f
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows filename aliases')
+    def test_backup_import_rejects_case_aliases_before_extraction(self):
+        record = {'id': 'sample', 'title': '备份', 'messages': []}
+        archive = self.make_archive({'chats/sample.json': json.dumps(record),
+                                     'chats/SAMPLE.json': json.dumps({**record, 'id': 'SAMPLE'})})
+        with self.assertRaisesRegex(ValueError, '重复文件'):
+            backup.import_from(archive)
+        self.assertFalse(agent.CHATS_DIR.exists())
+
     def test_backup_round_trip_with_attachments_trash_notes_and_duplicate_import(self):
         self.chat('active', claude_session='local-session', codex_thread='local-thread',
                   queued=[{'text': '未发送', 'images': []}])
@@ -198,7 +208,8 @@ class HistoryManagementTests(IsolatedTest):
     def test_import_validates_all_files_before_committing_and_rejects_unsafe_archives(self):
         valid = {'id': 'valid', 'title': '对话', 'messages': []}
         invalid_paths = ('../outside', '/tmp/outside', 'chats/../outside', 'chats//valid.json',
-                         'settings.json', 'chats/valid/../../outside', 'chats\\valid.json')
+                         'settings.json', 'chats/valid/../../outside', 'chats\\valid.json',
+                         'chats/CON.json', 'chats/valid/NUL.png', 'research/LPT1/meta.json')
         for name in invalid_paths:
             with self.subTest(name=name):
                 f = self.make_archive({'chats/valid.json': json.dumps(valid), name: 'bad'})

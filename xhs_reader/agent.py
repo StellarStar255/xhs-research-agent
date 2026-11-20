@@ -219,6 +219,13 @@ def list_chats(query="", scope="all", view="active", since="", until=""):
     return sorted(out, key=lambda c: not c["pinned"])
 
 
+def trash_root():
+    root = CHATS_DIR / ".trash"
+    if paths.is_redirected(CHATS_DIR) or paths.is_redirected(root):
+        raise RuntimeError("对话或回收站目录是符号链接或目录联接，无法操作回收站")
+    return root
+
+
 def delete(cid):
     _path(cid)  # validate before marking the id
     with _lock:
@@ -236,7 +243,7 @@ def delete(cid):
             record = _path(cid)
             if not record.exists():
                 return
-            dest = CHATS_DIR / ".trash" / cid
+            dest = trash_root() / cid
             dest.mkdir(parents=True, exist_ok=False)
             moved_images = False
             try:
@@ -256,7 +263,13 @@ def delete(cid):
 
 def list_trash():
     out = []
-    for f in (CHATS_DIR / ".trash").glob("*/record.json"):
+    try:
+        root = trash_root()
+    except RuntimeError:
+        return out
+    for f in root.glob("*/record.json"):
+        if paths.is_redirected(f.parent) or paths.is_redirected(f):
+            continue
         try:
             c = validate_chat(read_json(f), f.parent.name)
             out.append({"id": c["id"], "title": c.get("title", "无标题")})
@@ -268,8 +281,11 @@ def list_trash():
 def restore(cid):
     with _lock:
         target = _path(cid)
-        source = CHATS_DIR / ".trash" / cid
-        chat = validate_chat(read_json(source / "record.json"), cid)
+        source = trash_root() / cid
+        record = source / "record.json"
+        if paths.is_redirected(source) or paths.is_redirected(record) or paths.is_redirected(source / "images"):
+            raise RuntimeError("回收站对话包含符号链接或目录联接，无法恢复")
+        chat = validate_chat(read_json(record), cid)
         if target.exists() or image_dir(cid).exists():
             raise RuntimeError("同名对话已存在，无法恢复")
         # Restoring never restarts a worker or automatically sends queued messages.
@@ -290,14 +306,20 @@ def restore(cid):
             if moved:
                 image_dir(cid).rename(source / "images")
             raise
-        (source / "record.json").unlink()
+        record.unlink()
         source.rmdir()
 
 
 def purge(cid):
     _path(cid)
     with _lock:
-        shutil.rmtree(CHATS_DIR / ".trash" / cid)
+        entry = trash_root() / cid
+        if entry.is_symlink():
+            entry.unlink()
+        elif paths.is_redirected(entry):
+            entry.rmdir()
+        else:
+            shutil.rmtree(entry)
 
 
 def is_running(cid):

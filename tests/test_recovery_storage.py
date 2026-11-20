@@ -1,10 +1,28 @@
+import os
+import json
+import subprocess
+import zipfile
+from pathlib import Path
 from unittest.mock import Mock
 
 from test_optimizations import IsolatedTest
-from xhs_reader import agent, note_cache, server, storage, store
+from xhs_reader import agent, backup, note_cache, server, storage, store
 
 
 class RecoveryStorageTests(IsolatedTest):
+    def redirect(self, link, target):
+        if os.name != 'nt':
+            link.symlink_to(target, target_is_directory=True)
+            return
+        # A Windows junction exercises the same storage boundary without symlink privileges.
+        powershell = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+        subprocess.run([str(powershell), '-NoProfile', '-NonInteractive', '-Command',
+                        "$ErrorActionPreference='Stop'; "
+                        "New-Item -ItemType Junction -Path $env:XHS_TEST_LINK "
+                        "-Target $env:XHS_TEST_TARGET | Out-Null"],
+                       env=dict(os.environ, XHS_TEST_LINK=str(link), XHS_TEST_TARGET=str(target)),
+                       creationflags=subprocess.CREATE_NO_WINDOW, check=True, timeout=10)
+
     def test_recovery_preserves_partial_answer_full_queued_text_and_images(self):
         long_text = '完整的排队问题' * 100
         chat = self.chat(queued=[{'text': long_text, 'images': ['queued.png']}],
@@ -82,7 +100,7 @@ class RecoveryStorageTests(IsolatedTest):
         agent._runs.clear()
         outside = self.tmp / 'outside'; outside.mkdir()
         (outside / 'private.txt').write_bytes(b'protected')
-        (agent.CHATS_DIR / 'linked').symlink_to(outside, target_is_directory=True)
+        self.redirect(agent.CHATS_DIR / 'linked', outside)
         self.assertEqual(storage.usage()['categories']['chat_images']['bytes'], 0)
         self.assertEqual((outside / 'private.txt').read_bytes(), b'protected')
 
@@ -92,7 +110,43 @@ class RecoveryStorageTests(IsolatedTest):
         (root / 'broken/record.json').write_text('{broken')
         outside = self.tmp / 'outside'; outside.mkdir()
         (outside / 'keep.txt').write_text('保留', encoding='utf-8')
-        (root / 'link').symlink_to(outside, target_is_directory=True)
+        self.redirect(root / 'link', outside)
+        self.redirect(root / 'broken' / 'nested-link', outside)
         storage.cleanup(['trash'])
         self.assertEqual(list(root.iterdir()), [])
         self.assertEqual((outside / 'keep.txt').read_text(encoding='utf-8'), '保留')
+
+    def test_redirected_trash_root_blocks_bulk_and_single_purge(self):
+        agent.CHATS_DIR.mkdir()
+        outside = self.tmp / 'external'
+        chat = outside / 'example'
+        chat.mkdir(parents=True)
+        record = chat / 'record.json'
+        record.write_text('preserve', encoding='utf-8')
+        self.redirect(agent.CHATS_DIR / '.trash', outside)
+        with self.assertRaisesRegex(RuntimeError, '回收站'):
+            storage.cleanup(['trash'])
+        with self.assertRaisesRegex(RuntimeError, '回收站'):
+            agent.purge('example')
+        self.assertEqual(record.read_text(encoding='utf-8'), 'preserve')
+
+        archive = self.tmp / 'incoming.zip'
+        with zipfile.ZipFile(archive, 'w') as z:
+            z.writestr('manifest.json', json.dumps(backup.MANIFEST))
+            z.writestr('chats/.trash/incoming/record.json', json.dumps(
+                {'id': 'incoming', 'title': '导入', 'messages': []}))
+        with self.assertRaisesRegex(RuntimeError, '备份目标目录'):
+            backup.import_from(archive)
+        self.assertEqual(list(outside.iterdir()), [chat])
+
+    def test_backup_and_usage_exclude_nested_directory_redirections(self):
+        self.chat('active')
+        outside = self.tmp / 'external'
+        outside.mkdir()
+        (outside / 'private.png').write_bytes(b'outside')
+        self.redirect(agent.image_dir('active'), outside)
+        dest = self.tmp / 'backup.zip'
+        backup.export_to(dest)
+        with zipfile.ZipFile(dest) as archive:
+            self.assertEqual(archive.namelist(), ['manifest.json', 'chats/active.json'])
+        self.assertEqual(storage.usage()['categories']['chat_images']['files'], 0)
