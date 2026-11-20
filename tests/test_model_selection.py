@@ -13,6 +13,12 @@ from xhs_reader.persistence import atomic_json
 
 
 class ModelSelectionTests(IsolatedTest):
+    def test_codex_keeps_the_message_from_a_cli_error_event(self):
+        msg = {"status": "running"}
+        codex_backend._handle({}, msg, {"type": "error", "message": "Codex model is unavailable"})
+        codex_backend._handle({}, msg, {"type": "turn.failed", "error": {}})
+        self.assertEqual(msg, {"status": "error", "error": "Codex model is unavailable"})
+
     @unittest.skipUnless(os.name == 'nt', 'Windows installer layout')
     def test_codex_desktop_install_is_discovered_without_path_after_a_miss(self):
         executable = self.tmp / 'Programs' / 'OpenAI' / 'Codex' / 'bin' / 'codex.exe'

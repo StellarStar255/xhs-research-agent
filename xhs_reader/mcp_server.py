@@ -44,30 +44,46 @@ def _tools():
     return out
 
 
+def _reply(request_id, **payload):
+    print(json.dumps({"jsonrpc": "2.0", "id": request_id, **payload}, ensure_ascii=False), flush=True)
+
+
 def serve():
+    # MCP uses UTF-8 even when redirected Windows stdio defaults to an ANSI code page.
+    sys.stdout.reconfigure(encoding="utf-8")
     paths.use_system_certificates()
-    for line in sys.stdin:
+    for line in sys.stdin.buffer:
         try:
             req = json.loads(line)
         except ValueError:
+            _reply(None, error={"code": -32700, "message": "Parse error"})
+            continue
+        if not isinstance(req, dict):
+            _reply(None, error={"code": -32600, "message": "Invalid request"})
             continue
         method, rid = req.get("method"), req.get("id")
         if rid is None:  # notification (e.g. notifications/initialized)
             continue
+        params = req.get("params", {})
+        if not isinstance(params, dict):
+            _reply(rid, error={"code": -32602, "message": "Invalid params"})
+            continue
         if method == "initialize":
-            result = {"protocolVersion": req.get("params", {}).get("protocolVersion") or PROTOCOL,
+            result = {"protocolVersion": params.get("protocolVersion") or PROTOCOL,
                       "capabilities": {"tools": {}},
                       "serverInfo": {"name": "xiaohongshu", "version": "1"}}
         elif method == "tools/list":
             result = {"tools": _tools()}
         elif method == "tools/call":
-            p = req.get("params") or {}
-            content, is_error = call_tool(p.get("name") or "", p.get("arguments") or {})
+            name, args = params.get("name"), params.get("arguments", {})
+            if not isinstance(name, str) or not isinstance(args, dict):
+                _reply(rid, error={"code": -32602, "message": "Invalid tool name or arguments"})
+                continue
+            content, is_error = call_tool(name, args)
             result = {"content": content, "isError": bool(is_error)}
         elif method == "ping":
             result = {}
         else:
-            print(json.dumps({"jsonrpc": "2.0", "id": rid,
-                              "error": {"code": -32601, "message": f"unknown method {method}"}}), flush=True)
+            _reply(rid, error={"code": -32601, "message": f"unknown method {method}"})
             continue
-        print(json.dumps({"jsonrpc": "2.0", "id": rid, "result": result}, ensure_ascii=False), flush=True)
+        _reply(rid, result=result)

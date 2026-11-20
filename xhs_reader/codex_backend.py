@@ -158,9 +158,11 @@ def _handle(chat, msg, ev):
                         "completion": u.get("output_tokens", 0)}
         msg["status"] = "done"
     elif t in ("turn.failed", "error"):
-        err = ev.get("error") or {}
+        err = ev.get("error")
+        detail = (err.get("message") if isinstance(err, dict) else err) or ev.get("message")
         msg["status"] = "error"
-        msg["error"] = codex_error(err.get("message") if isinstance(err, dict) else str(ev.get("message") or err))
+        if detail or not msg.get("error"):
+            msg["error"] = codex_error(str(detail or ""))
 
 
 def _pump(cid, proc, run):
@@ -182,7 +184,8 @@ def _pump_events(cid, proc):
         for line in proc.stderr:
             stderr_tail.append(line.rstrip())
             del stderr_tail[:-30]
-    threading.Thread(target=drain, daemon=True).start()
+    stderr_reader = threading.Thread(target=drain, daemon=True)
+    stderr_reader.start()
 
     for line in proc.stdout:
         try:
@@ -191,6 +194,7 @@ def _pump_events(cid, proc):
             continue
         agent.update(cid, lambda chat, msg: _handle(chat, msg, ev))
     proc.wait()
+    stderr_reader.join(timeout=1)
     err = None
     if proc.returncode:
         useful = [ln for ln in stderr_tail if "codex_models_manager" not in ln]  # benign model-list noise
