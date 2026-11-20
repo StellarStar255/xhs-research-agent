@@ -101,6 +101,11 @@ def main():
                         wait_ready()
                         evaluate("""
                             document.querySelector('#notice').classList.remove('show');
+                            document.querySelector('#gear').click();
+                            if (!document.querySelector('#modal').classList.contains('show')) throw Error('settings did not open');
+                            for (let i=0; i<200 && !document.querySelector('#sSave'); i++) await new Promise(r=>setTimeout(r,50));
+                            if (!document.querySelector('#sSave')) throw Error('settings did not load: '+document.querySelector('#sheet').innerText);
+                            document.querySelector('#sheet .close').click();
                             await openChat('upgrade-chat');
                             if(!document.querySelector('[data-continue]') || !document.querySelector('[data-reuse]')) throw Error('interrupted recovery missing');
                             document.querySelector('#input').value='原生窗口草稿'; draftEdits++;

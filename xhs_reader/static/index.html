@@ -1643,8 +1643,8 @@ document.addEventListener('keydown', e => {
 
 /* ---------- settings ---------- */
 let conf = null;
-async function loadSettings() {
-  conf = await api('/api/settings');
+async function loadSettings(options) {
+  conf = await api('/api/settings', options);
   const p = conf.providers.find(p => p.id === conf.api.provider);
   $('#backendLabel').textContent = conf.backend === 'claude' ? 'Claude Code' + (conf.claude_model ? ' · ' + conf.claude_model : '') : conf.backend === 'codex' ? 'Codex' + (conf.codex_model ? ' · ' + conf.codex_model : '')
     : (conf.api.has_key ? (p && p.id !== 'custom' ? p.name.split('（')[0] : '') + ' ' + conf.api.model : '未配置 API');
@@ -1692,7 +1692,46 @@ function showProviderNote() {
   $('#sNote').innerHTML = [p.note && esc(p.note), p.key_url && `<a href="${esc(p.key_url)}" target="_blank">去获取 API Key ↗</a>`].filter(Boolean).join(' · ');
 }
 async function openSettings(message) {
-  await loadSettings();
+  const sheet = $('#sheet'), modal = $('#modal');
+  sheet.innerHTML = `<div class="settings">${closeBtn}<h2>设置</h2>
+    <p class="note" role="status">正在加载设置…</p></div>`;
+  modal.classList.add('show');
+  const loading = sheet.firstElementChild;
+  const isCurrent = () => modal.classList.contains('show') && sheet.firstElementChild === loading;
+  let rendering = false;
+  try {
+    const requestOptions = () => ({signal: AbortSignal.timeout(20000)});
+    try { await loadSettings(requestOptions()); }
+    catch (e) {
+      if (!isCurrent()) return;
+      if (!(e instanceof TypeError || e.status >= 500)) throw e;
+      await new Promise(resolve => setTimeout(resolve, 350));
+      if (!isCurrent()) return;
+      await loadSettings(requestOptions());
+    }
+    if (!isCurrent()) return;
+    const extra = REMOTE ? [] : await Promise.all([
+      api('/api/ui', requestOptions()).catch(() => ({native: false})),
+      api('/api/browser-window', requestOptions()).catch(() => ({mode: 'background', platform: ''})),
+      api('/api/mobile', requestOptions()).catch(() => ({enabled: false})),
+    ]);
+    if (isCurrent()) {
+      rendering = true;
+      renderSettings(message, ...extra);
+    }
+  } catch (e) {
+    if (!rendering && !isCurrent()) return;
+    sheet.replaceChildren(loading);
+    loading.querySelector('[role=status]').textContent = e.name === 'TimeoutError'
+      ? '读取设置超时，请重试。' : '暂时无法读取设置：' + e.message;
+    const retry = document.createElement('button');
+    retry.className = 'btn';
+    retry.textContent = '重试';
+    retry.onclick = () => openSettings(message);
+    loading.append(retry);
+  }
+}
+function renderSettings(message, ui, bw, mob) {
   if (REMOTE) {
     $('#sheet').innerHTML = `<div class="settings">
       <button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button>
@@ -1707,9 +1746,6 @@ async function openSettings(message) {
     return;
   }
   const a = conf.api;
-  const ui = await api('/api/ui').catch(() => ({native: false}));
-  const bw = await api('/api/browser-window').catch(() => ({mode: 'background', platform: ''}));
-  let mob = await api('/api/mobile').catch(() => ({enabled: false}));
   $('#sheet').innerHTML = `<div class="settings">
     <button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button>
     <h2>设置</h2>
@@ -1940,7 +1976,7 @@ let REMOTE = false;  // opened from a phone through 手机访问
   loadSettings().then(c => {
   if (c.backend === 'api' && !c.api.has_key) openSettings('第一次使用：请选择一个大模型服务商并填写 API Key');
   else if (location.hash === '#settings') { history.replaceState(null, '', location.pathname + location.search); openSettings(); }
-  });
+  }).catch(() => {});
 })();
 </script>
 </body>

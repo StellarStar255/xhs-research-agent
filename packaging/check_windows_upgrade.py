@@ -13,6 +13,8 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from playwright.sync_api import sync_playwright
+
 
 def sha256(path):
     with path.open("rb") as file:
@@ -53,7 +55,9 @@ def check(previous, setup, expected_exe, root):
     previous_hash, expected_hash = sha256(exe), sha256(expected_exe)
     if previous_hash == expected_hash:
         raise RuntimeError("The old and new binaries are identical")
-    settings = {"backend": "api", "notice_accepted": 1}
+    settings = {"backend": "api", "notice_accepted": 1,
+                "api": {"provider": "custom", "base_url": "http://127.0.0.1:1",
+                        "model": "fixture", "api_key": "fixture-only"}}
     record = {"id": "upgrade-fixture", "title": "Upgrade fixture", "backend": "api", "messages": []}
     (data / "chats").mkdir(parents=True)
     (data / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
@@ -93,7 +97,17 @@ def check(previous, setup, expected_exe, root):
     with socket.socket() as port_probe:
         port_probe.bind(("127.0.0.1", 0))
         port = port_probe.getsockname()[1]
+    with socket.socket() as port_probe:
+        port_probe.bind(("127.0.0.1", 0))
+        debug_port = port_probe.getsockname()[1]
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    debug_url = f"http://127.0.0.1:{debug_port}"
+
+    def gui_target(previous_target=None):
+        with opener.open(debug_url + "/json/list", timeout=3) as response:
+            return next((page["id"] for page in json.load(response)
+                         if page.get("url", "").startswith(f"http://localhost:{port}/")
+                         and page["id"] != previous_target), None)
 
     def api(path, method="GET"):
         req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method)
@@ -104,11 +118,14 @@ def check(previous, setup, expected_exe, root):
     with ThreadingHTTPServer(("127.0.0.1", 0), ReleaseFixture) as fixture:
         thread = threading.Thread(target=fixture.serve_forever, daemon=True)
         thread.start()
-        env = dict(os.environ, XHS_DATA_DIR=str(data), XHS_NO_BROWSER="1", XHS_PORT=str(port),
+        env = dict(os.environ, XHS_DATA_DIR=str(data), XHS_PORT=str(port),
+                   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f"--remote-debugging-port={debug_port}",
                    XHS_UPDATE_API=f"http://127.0.0.1:{fixture.server_port}/latest")
+        env.pop("XHS_NO_BROWSER", None)
         original = subprocess.Popen([str(exe)], env=env)
         try:
             wait_for("the previous installed app", lambda: api("/api/ping"), 30)
+            previous_target = wait_for("the previous WebView2 window", gui_target, 45)
             api("/api/update/check", "POST")
             wait_for("the update to become available", lambda: api("/api/update").get("available"), 15)
             api("/api/update/start", "POST")
@@ -123,7 +140,14 @@ def check(previous, setup, expected_exe, root):
             assert new["app"] == "xhs-research-agent"
             assert api("/api/chats/upgrade-fixture")["title"] == record["title"]
             assert api("/api/notice")["accepted"]
-            print(f"PASS: real Windows installer replaced the binary and preserved data on port {port}")
+            wait_for("WebView2 on first launch after the update", lambda: gui_target(previous_target), 45)
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.connect_over_cdp(debug_url, timeout=10000)
+                page = next(page for context in browser.contexts for page in context.pages
+                            if page.url.startswith(f"http://localhost:{port}/"))
+                page.locator("#gear").click(timeout=15000)
+                page.locator("#modal.show #sSave").wait_for(state="visible", timeout=20000)
+            print(f"PASS: real Windows installer preserved data and Settings opened on first relaunch on port {port}")
         finally:
             try:
                 api("/api/shutdown", "POST")

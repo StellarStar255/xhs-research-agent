@@ -210,7 +210,17 @@ class FrontendTests(IsolatedTest):
                 self.stack.enter_context(patch.object(settings, 'codex_models', return_value=[
                     {'id':'test-model-a','name':'Test model','efforts':['low','high']}]))
                 settings.update(lambda s: s.update(backend='codex'))
-                page.evaluate('openSettings()')
+                def settings_unavailable(route):
+                    route.fulfill(status=503, json={'detail':'设置服务正在启动'})
+                page.route('**/api/settings', settings_unavailable)
+                page.locator('#menuBtn').click()
+                page.locator('#gear').click()
+                page.locator('#modal [role=status]').wait_for(state='visible')
+                self.assertIn('设置服务正在启动', page.locator('#modal').get_by_role('button', name='重试').evaluate(
+                    '(button) => button.parentElement.textContent'))
+                page.unroute('**/api/settings', settings_unavailable)
+                page.locator('#modal').get_by_role('button', name='重试').click()
+                page.locator('#sCodex').wait_for(state='visible')
                 self.assertTrue(page.locator('#sCodex').is_visible())
                 self.assertFalse(page.locator('#sClaude').is_visible())
                 self.assertFalse(page.locator('#sCodexCustomField').is_visible())
