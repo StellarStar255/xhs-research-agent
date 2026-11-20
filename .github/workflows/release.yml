@@ -17,6 +17,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      windows_upgrade_from:
+        description: "Windows upgrade test: previous release tag (for example v0.1.48)"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -42,6 +47,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
   macos:
+    if: github.event_name != 'workflow_dispatch' || inputs.windows_upgrade_from == ''
     needs: version
     runs-on: macos-latest   # Apple Silicon
     env:
@@ -176,6 +182,19 @@ jobs:
           if ((Get-FileHash $installed).Hash -ne (Get-FileHash "dist/XHS Research Agent/XHS Research Agent.exe").Hash) { throw "Installed executable differs from build" }
           python packaging/check_native.py --binary "$installed"
           if ($LASTEXITCODE) { throw "Installed native workflow validation failed" }
+      - name: Upgrade from a published Windows installer
+        if: github.event_name == 'workflow_dispatch' && inputs.windows_upgrade_from != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_TAG: ${{ inputs.windows_upgrade_from }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $previous = Join-Path $env:RUNNER_TEMP "previous-release"
+          gh release download "$env:PREVIOUS_TAG" --dir "$previous" --pattern "*-windows-x64-setup.exe" --pattern "SHA256SUMS.txt"
+          if ($LASTEXITCODE) { throw "Previous release download failed" }
+          python -X utf8 packaging/check_windows_upgrade.py "$previous" "dist/XHS-Research-Agent-$env:VERSION-windows-x64-setup.exe" "dist/XHS Research Agent/XHS Research Agent.exe"
+          if ($LASTEXITCODE) { throw "In-app Windows upgrade validation failed" }
       - uses: actions/upload-artifact@v4
         with:
           name: windows
