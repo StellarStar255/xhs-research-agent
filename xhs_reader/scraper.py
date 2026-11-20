@@ -11,7 +11,7 @@ import time
 from contextlib import contextmanager
 from urllib.parse import quote
 
-from playwright.sync_api import Error as PlaywrightError, sync_playwright
+from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeout, sync_playwright
 
 from .paths import DATA_DIR
 from .persistence import atomic_json, file_lock, read_json
@@ -23,6 +23,7 @@ HOME = "https://www.xiaohongshu.com/explore"
 SEARCH_API = "/search/notes"  # v1 on edith., v2 on so. (2026 layout)
 COMMENT_API = "/api/sns/web/v2/comment/page"
 ME_API = "/api/sns/web/v2/user/me"
+ME_TIMEOUT_MS = 20000
 
 
 # Fixed pacing & budgets. Viewing too many notes in a short time
@@ -36,6 +37,10 @@ COOLDOWN_FILE = DATA_DIR / "cooldown.json"  # {"until": ts, "reason": ...}
 
 
 class NotLoggedIn(RuntimeError):
+    pass
+
+
+class LoginStatusUnknown(RuntimeError):
     pass
 
 
@@ -199,14 +204,43 @@ def _browser_context(headless):
             ctx.close()
 
 
-def _me(page):
-    """Return the /user/me payload observed while loading the home page."""
-    with page.expect_response(lambda r: ME_API in r.url, timeout=20000) as info:
-        page.goto(HOME, wait_until="domcontentloaded")
+def _account_response(response):
+    if not response.ok:
+        return None
     try:
-        return info.value.json().get("data") or {}
-    except Exception:
-        return {}
+        data = response.json().get("data")
+    except (PlaywrightError, ValueError, AttributeError):
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get("guest"), bool) else None
+
+
+def _page_account(page):
+    return page.evaluate("""() => {
+      const unwrap = v => (v && typeof v === 'object' && '_value' in v) ? v._value : v;
+      const user = window.__INITIAL_STATE__?.user;
+      const loggedIn = unwrap(user?.loggedIn);
+      if (typeof loggedIn !== 'boolean') return null;
+      const info = unwrap(user?.userInfo);
+      return { guest: !loggedIn, nickname: info?.nickname, user_id: info?.user_id };
+    }""")
+
+
+def _me(page):
+    """Read a confirmed guest/account state from the network or the loaded page."""
+    data = None
+    try:
+        with page.expect_response(lambda r: ME_API in r.url, timeout=ME_TIMEOUT_MS) as info:
+            page.goto(HOME, wait_until="domcontentloaded")
+        data = _account_response(info.value)
+    except PlaywrightTimeout:
+        pass
+    if data is not None:
+        return data
+    _check_blocked(page)
+    data = _page_account(page)
+    if data is None:
+        raise LoginStatusUnknown("暂时无法确认小红书登录状态，请稍后重试")
+    return data
 
 
 def is_logged_in(page):
@@ -214,45 +248,61 @@ def is_logged_in(page):
     return bool(data) and not data.get("guest", True), data
 
 
+def _qr_panel_visible(page):
+    text = page.locator("body").inner_text(timeout=4000)
+    return "小红书如何扫码" in text or "扫码登录" in text
+
+
 def login(timeout_s=300):
     """Open a visible window and wait for the user to scan the QR code."""
-    with browser(headless=False) as ctx:
+    with browser(headless=False, wait_s=30) as ctx:
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        ok, me = is_logged_in(page)
-        if ok:
-            return me
-        print("请在弹出的浏览器窗口中用小红书 App 扫码登录……", flush=True)
-        # Only listen passively here: navigating would regenerate the QR code.
-        # After a successful scan the site itself re-fetches user/me.
-        found = {}
+        found = None
 
         def on_response(resp):
+            nonlocal found
             if ME_API in resp.url:
-                try:
-                    data = resp.json().get("data") or {}
-                    if data and not data.get("guest", True):
-                        found.update(data)
-                except Exception:
-                    pass
+                data = _account_response(resp)
+                if data is not None and not data["guest"]:
+                    found = data
 
-        ctx.on("response", on_response)
-        deadline = time.time() + timeout_s
-        while time.time() < deadline and not found:
-            page.wait_for_timeout(2000)
-            try:
-                me = page.evaluate("""() => {
-                  const un = v => (v && typeof v === 'object' && '_value' in v) ? v._value : v;
-                  const u = window.__INITIAL_STATE__?.user;
-                  return un(u?.loggedIn) ? JSON.parse(JSON.stringify(un(u.userInfo) || {})) : null;
-                }""")
-                if me is not None:
-                    found.update(me or {"nickname": ""})
-            except Exception:
-                pass  # page mid-navigation
-        if found:
-            page.wait_for_timeout(3000)
-            return found
-        raise NotLoggedIn("登录超时")
+        page.on("response", on_response)
+        try:
+            page.goto(HOME, wait_until="domcontentloaded", timeout=ME_TIMEOUT_MS)
+            _check_blocked(page)
+            account = _page_account(page)
+            if found is not None:
+                return found
+            if account is not None and not account["guest"]:
+                return account
+            if not _qr_panel_visible(page):
+                try:
+                    page.get_by_role("button", name="登录", exact=True).first.click(timeout=8000)
+                except PlaywrightTimeout:
+                    pass  # The user can still open the login panel manually.
+            print("请在弹出的浏览器窗口中用小红书 App 扫码登录……", flush=True)
+            deadline = time.monotonic() + timeout_s
+            while time.monotonic() < deadline:
+                if found is not None:
+                    page.wait_for_timeout(3000)  # Give the browser a chance to persist authentication.
+                    return found
+                try:
+                    account = _page_account(page)
+                except PlaywrightError:
+                    if page.is_closed():
+                        raise
+                    account = None  # The page can be mid-navigation after the scan.
+                if account is not None and not account["guest"]:
+                    found = account
+                    continue
+                page.wait_for_timeout(1000)
+            raise NotLoggedIn("登录超时")
+        except PlaywrightError as e:
+            if page.is_closed():
+                raise NotLoggedIn("登录窗口已关闭，请重试") from e
+            raise
+        finally:
+            page.remove_listener("response", on_response)
 
 
 def status(wait_s=900):

@@ -24,6 +24,40 @@ class FrontendTests(IsolatedTest):
         self.stack.enter_context(patch.object(suggestions, 'get', return_value={
             'items': [], 'personal': False, 'pending': False, 'revision': '', 'failed': False}))
 
+    def test_qr_opens_and_login_is_detected_without_account_endpoint(self):
+        from contextlib import nullcontext
+        from playwright.sync_api import sync_playwright
+        from xhs_reader import scraper
+
+        html = """<button>登录</button><script>
+        window.__INITIAL_STATE__ = {user: {loggedIn: {_value: false}}};
+        document.querySelector('button').onclick = () => {
+          document.body.insertAdjacentHTML('beforeend', '<p>扫码</p><p>小红书如何扫码</p>');
+          window.__INITIAL_STATE__.user = {
+            loggedIn: {_value: true}, userInfo: {_value: {nickname: '扫码测试', user_id: 'fixture'}}
+          };
+        };
+        </script>"""
+        home = 'https://login-fixture.test/explore'
+        with sync_playwright() as p:
+            browser = p.chromium.launch(channel='chrome', headless=True)
+            context = browser.new_context()
+            try:
+                page = context.new_page()
+                page.route(home, lambda route: route.fulfill(content_type='text/html; charset=utf-8', body=html))
+                with patch.object(scraper, 'HOME', home), \
+                     patch.object(scraper, 'browser', return_value=nullcontext(context)):
+                    result = scraper.login(timeout_s=5)
+                    self.assertEqual(result['nickname'], '扫码测试')
+                    self.assertTrue(scraper._qr_panel_visible(page))
+                page.unroute(home)
+                page.route(home, lambda route: route.fulfill(content_type='text/html', body='<p>loading</p>'))
+                with patch.object(scraper, 'HOME', home), patch.object(scraper, 'ME_TIMEOUT_MS', 500):
+                    with self.assertRaises(scraper.LoginStatusUnknown):
+                        scraper.is_logged_in(page)
+            finally:
+                browser.close()
+
     def test_open_windows_update_login_without_reload(self):
         import uvicorn
         from playwright.sync_api import sync_playwright, expect
@@ -50,6 +84,7 @@ class FrontendTests(IsolatedTest):
                               json={'detail': '找不到登录程序'}))
                     gui.locator('.login-card [data-login]').click()
                     expect(gui.locator('#loginState')).to_contain_text('找不到登录程序')
+                    login.update(logged_in=None)
                     gui.evaluate('loadStatus()')
                     expect(gui.locator('#loginText')).to_contain_text('找不到登录程序')
                     expect(gui.locator('.login-card [data-login]')).to_be_enabled()

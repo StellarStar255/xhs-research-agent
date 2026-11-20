@@ -1,5 +1,6 @@
 import threading
 import time
+from contextlib import nullcontext
 from unittest.mock import Mock, patch
 
 from test_optimizations import IsolatedTest
@@ -72,3 +73,13 @@ class LoginSyncTests(IsolatedTest):
         server._finish_login(proc)
         self.assertEqual(server.login_status()['state'], 'idle')
         self.assertIsNone(server._status['value'])
+
+    def test_user_closing_qr_window_releases_attempt_with_retry_message(self):
+        page = Mock()
+        page.goto.side_effect = scraper.PlaywrightError('Target page has been closed')
+        page.is_closed.return_value = True
+        with patch.object(scraper, 'browser', return_value=nullcontext(Mock(pages=[page]))) as browser:
+            with self.assertRaisesRegex(scraper.NotLoggedIn, '登录窗口已关闭'):
+                scraper.login()
+        browser.assert_called_once_with(headless=False, wait_s=30)
+        page.remove_listener.assert_called_once()

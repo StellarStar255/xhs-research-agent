@@ -1017,9 +1017,9 @@ async function loadStatus(refresh) {
     if (loginError !== wasError && current === null && loggedIn === false) newChat();
     if (typeof s.logged_in === 'boolean') setLogin(s.logged_in, s.nickname);
     else if (loginError) setLogin(false);
-    else $('#loginText').textContent = '暂时无法检查登录状态';
+    else if (!loginFailure) $('#loginText').textContent = '暂时无法检查登录状态';
     if (loginError) $('#loginText').textContent = '没有找到 Chrome';
-  } catch { if (request === statusRequest) $('#loginText').textContent = '状态未知'; }
+  } catch { if (request === statusRequest && !loginFailure) $('#loginText').textContent = '状态未知'; }
 }
 
 /* ---------- 小红书 login ---------- */

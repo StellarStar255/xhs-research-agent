@@ -205,7 +205,10 @@ def main(argv=None):
     if a.cmd == "login":
         try:
             me = scraper.login()
-        except (scraper.NotLoggedIn, scraper.NoBrowser, scraper.PlaywrightError, OSError) as e:
+        except TimeoutError:
+            print("浏览器正在执行另一项任务，请等待它结束后重新扫码", file=sys.stderr)
+            return 1
+        except (scraper.NotLoggedIn, scraper.NoBrowser, scraper.Limited, scraper.PlaywrightError, OSError) as e:
             print((str(e).splitlines() or [type(e).__name__])[0], file=sys.stderr)
             return 1
         print(f"已登录：{me.get('nickname') or ''}")
@@ -254,4 +257,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
