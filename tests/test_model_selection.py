@@ -1,4 +1,5 @@
 import os
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -9,6 +10,19 @@ from xhs_reader.persistence import atomic_json
 
 
 class ModelSelectionTests(IsolatedTest):
+    @unittest.skipUnless(os.name == 'nt', 'Windows installer layout')
+    def test_codex_desktop_install_is_discovered_without_path_after_a_miss(self):
+        executable = self.tmp / 'Programs' / 'OpenAI' / 'Codex' / 'bin' / 'codex.exe'
+        with patch.dict(os.environ, {'LOCALAPPDATA': str(self.tmp), 'XHS_CODEX_PATH': ''}), \
+             patch.object(settings.shutil, 'which', return_value=None), \
+             patch.object(settings, '_CLI_CANDIDATES', []):
+            self.assertIsNone(settings.find_codex())
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            self.assertEqual(Path(settings.find_codex()), executable)
+            executable.unlink()
+            self.assertIsNone(settings.find_codex())
+
     def test_custom_models_and_effort_roundtrip(self):
         with patch.object(settings, 'codex_models', return_value=[]):
             result = server.save_settings(server.SettingsReq(backend='codex', api=server.ApiConf(),

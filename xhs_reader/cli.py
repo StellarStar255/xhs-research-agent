@@ -203,8 +203,12 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     if a.cmd == "login":
-        me = scraper.login()
-        print(f"已登录：{me.get('nickname')}")
+        try:
+            me = scraper.login()
+        except (scraper.NotLoggedIn, scraper.NoBrowser, scraper.PlaywrightError, OSError) as e:
+            print((str(e).splitlines() or [type(e).__name__])[0], file=sys.stderr)
+            return 1
+        print(f"已登录：{me.get('nickname') or ''}")
     elif a.cmd == "status":
         print(json.dumps(scraper.status(), ensure_ascii=False))
     elif a.cmd == "find":

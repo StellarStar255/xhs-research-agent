@@ -112,6 +112,8 @@ def mobile_reset():
     return mobile_status()
 _status = {"at": 0, "value": None}
 _login = {"proc": None, "state": "idle", "message": ""}
+_login_lock = threading.Lock()
+_status_probe = threading.Lock()
 
 
 class Image(BaseModel):
@@ -174,7 +176,8 @@ def _merged(req: SettingsReq, s=None):
 
 @app.get("/")
 def index():
-    return FileResponse(Path(__file__).parent / "static" / "index.html")
+    return FileResponse(Path(__file__).parent / "static" / "index.html",
+                        headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/icon.png")
@@ -672,46 +675,71 @@ def _login_status(refresh):
     # Nothing touches Xiaohongshu before the user has accepted the usage notice.
     if not settings.notice_accepted():
         return {"logged_in": None, "needs_notice": True}
-    # Checking login launches a browser, so cache it; skip while scraping or cooling down.
-    if scraper.browser_busy() or scraper.limits()["cooldown_until"]:
-        return _status["value"] or {"busy": True}
-    if refresh or not _status["value"] or time.time() - _status["at"] > 600:
+    # Checking login launches a browser. Coalesce probes across all open clients.
+    with _login_lock:
+        cached = _status["value"]
+        if _login["proc"] is not None:
+            return {**(cached or {}), "login_pending": True}
+        if not refresh and cached and time.monotonic() - _status["at"] < (30 if cached.get("error") else 600):
+            return cached
+        if scraper.limits()["cooldown_until"] or not _status_probe.acquire(blocking=False):
+            return cached or {"busy": True}
+    try:
         try:
-            _status["value"] = scraper.status()
+            value = scraper.status(wait_s=0)
+        except TimeoutError:
+            return cached or {"busy": True}
         except Exception as e:
-            _status["value"] = {"logged_in": False, "error": str(e)}
-        _status["at"] = time.time()
-    return _status["value"]
+            value = {"logged_in": None, **(cached or {}), "error": str(e)}
+        with _login_lock:
+            # A QR attempt can start while a status probe is ending. Its result wins.
+            if _login["proc"] is not None:
+                return {**(_status["value"] or {}), "login_pending": True}
+            if _status["value"] is not cached:
+                return _status["value"]
+            _status.update(value=value, at=time.monotonic())
+            return value
+    finally:
+        _status_probe.release()
 
 
 @app.post("/api/login")
 def login():
     """Open a visible Chrome window with the QR code; poll /api/login/status for the result."""
     _require_notice()
-    p = _login["proc"]
-    if p and p.poll() is None:
-        return login_status()
-    paths.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _login.update(state="waiting", message="", proc=procutil.popen(
-        paths.cli_command("login"), cwd=paths.DATA_DIR, env=paths.child_env(),
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
+    with _login_lock:
+        if _login["proc"] is None:
+            paths.DATA_DIR.mkdir(parents=True, exist_ok=True)
+            p = procutil.popen(paths.cli_command("login"), cwd=paths.DATA_DIR, env=paths.child_env(),
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True)
+            _login.update(state="waiting", message="", proc=p)
+            threading.Thread(target=_finish_login, args=(p,), daemon=True).start()
     return login_status()
+
+
+def _finish_login(p):
+    try:
+        out, _ = p.communicate()
+    except OSError as e:
+        out = str(e)
+    with _login_lock:
+        m = re.search(r"^已登录：(.*)$", out, re.MULTILINE)
+        if p.returncode == 0 and m:
+            nickname = m.group(1).strip()
+            _login.update(state="done", message=nickname, proc=None)
+            _status.update(value={"logged_in": True, "nickname": nickname}, at=time.monotonic())
+        else:
+            timeout = "登录超时" in out
+            details = [line for line in out.strip().splitlines() if not line.startswith("[PYI-")]
+            _login.update(state="failed", proc=None, message="扫码超时（5 分钟），请再试一次" if timeout
+                          else "登录没有完成：" + (details or ["未知错误"])[-1][:200])
 
 
 @app.get("/api/login/status")
 def login_status():
-    p = _login["proc"]
-    if p and _login["state"] == "waiting" and p.poll() is not None:
-        out = p.stdout.read()
-        m = re.search(r"已登录：(.*)", out)
-        if p.returncode == 0 and m:
-            _login.update(state="done", message=m.group(1).strip())
-            _status.update(value={"logged_in": True, "nickname": m.group(1).strip()}, at=time.time())
-        else:
-            timeout = "登录超时" in out
-            _login.update(state="failed", message="扫码超时（5 分钟），请再试一次" if timeout
-                          else "登录没有完成：" + (out.strip().splitlines() or ["未知错误"])[-1][:200])
-    return {"state": _login["state"], "message": _login["message"]}
+    with _login_lock:
+        return {"state": _login["state"], "message": _login["message"]}
 
 
 @app.get("/api/ping")

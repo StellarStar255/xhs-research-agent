@@ -24,6 +24,40 @@ class FrontendTests(IsolatedTest):
         self.stack.enter_context(patch.object(suggestions, 'get', return_value={
             'items': [], 'personal': False, 'pending': False, 'revision': '', 'failed': False}))
 
+    def test_open_windows_update_login_without_reload(self):
+        import uvicorn
+        from playwright.sync_api import sync_playwright, expect
+
+        settings.accept_notice()
+        login = {'logged_in': False}
+        self.stack.enter_context(patch.object(server, '_login_status', side_effect=lambda _: dict(login)))
+        sock = socket.socket()
+        sock.bind(('127.0.0.1', 0))
+        sock.listen()
+        srv = uvicorn.Server(uvicorn.Config(server.app, log_level='error'))
+        worker = threading.Thread(target=srv.run, kwargs={'sockets': [sock]}, daemon=True)
+        worker.start()
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(channel='chrome', headless=True)
+                try:
+                    url = f'http://127.0.0.1:{sock.getsockname()[1]}/'
+                    gui, web = browser.new_page(), browser.new_page()
+                    for page in (gui, web):
+                        page.goto(url)
+                        expect(page.locator('.login-card')).to_be_visible()
+                    login.update(logged_in=True, nickname='测试')
+                    for page in (gui, web):
+                        page.bring_to_front()
+                        expect(page.locator('#loginText')).to_have_text('已登录：测试', timeout=10000)
+                        expect(page.locator('.login-card')).to_have_count(0)
+                finally:
+                    browser.close()
+        finally:
+            srv.should_exit = True
+            worker.join(5)
+            sock.close()
+
     def test_incremental_updates_preserve_history_and_block_html(self):
         import uvicorn
         from playwright.sync_api import sync_playwright

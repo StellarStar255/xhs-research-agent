@@ -90,7 +90,17 @@ _CLI_CANDIDATES = [
     # Windows (native installers, npm)
     "~/.local/bin/{name}.exe", "~/AppData/Roaming/npm/{name}.cmd", "~/AppData/Local/Programs/{name}/{name}.exe",
 ]
-_found = {}  # cache: name -> path or None
+_found = {}  # cache successful lookups
+
+
+def _windows_cli_candidates(name):
+    if name != "codex" or os.name != "nt":
+        return []
+    local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    return [
+        local / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe",
+        local / "Microsoft" / "WinGet" / "Links" / "codex.exe",
+    ]
 
 
 def _cli_version(path):
@@ -106,9 +116,10 @@ def find_cli(name, env_override):
     native install in ~/.local/bin and a newer Homebrew one), use the newest version."""
     if os.environ.get(env_override):
         return os.environ[env_override]
-    if name in _found:
-        return _found[name]
-    candidates = [shutil.which(name)]
+    cached = _found.get(name)
+    if cached and Path(cached).is_file():
+        return cached
+    candidates = [shutil.which(name), *map(str, _windows_cli_candidates(name))]
     for pattern in _CLI_CANDIDATES:
         candidates += glob.glob(os.path.expanduser(pattern.format(name=name)))
     seen, found = set(), []
@@ -117,7 +128,10 @@ def find_cli(name, env_override):
         if real not in seen and os.access(f, os.X_OK) and Path(f).is_file():
             seen.add(real)
             found.append(f)
-    _found[name] = max(found, key=_cli_version) if len(found) > 1 else (found[0] if found else None)
+    if not found:
+        _found.pop(name, None)
+        return None
+    _found[name] = max(found, key=_cli_version) if len(found) > 1 else found[0]
     return _found[name]
 
 
@@ -160,7 +174,8 @@ def load():
     except ValueError:
         quarantine(SETTINGS_FILE)
         s = {}
-    s.setdefault("backend", "claude" if claude_available() else "codex" if codex_available() else "api")
+    if "backend" not in s:
+        s["backend"] = "claude" if claude_available() else "codex" if codex_available() else "api"
     s.setdefault("ui", "window")  # packaged app: "window" (own window) or "browser"
     # How the scraper's Chrome runs: "background" (headless) or "visible" (a normal Chrome
     # window on screen, so the user can watch what the assistant does).

@@ -16,6 +16,7 @@
 <link rel="apple-touch-icon" href="/icon.png?v=2">
 <style>
 :root {
+  color-scheme: light dark;
   --bg: #f7f6f4; --panel: #ffffff; --side: #efeeeb; --ink: #1d1d1f; --muted: #7a7a80; --line: #e5e3df;
   --accent: #ff2442; --accent-soft: #ffe8eb; --ok: #1f9d55; --user: #ff2442; --user-ink: #fff;
 }
@@ -491,7 +492,7 @@ async function checkedFetch(path, opts = {}) {
   } catch (e) { if (!path.startsWith('/api/diagnostics')) recordFailure((opts.method || 'GET') + ' ' + path, e); throw e; }
 }
 async function api(path, opts = {}) {
-  const r = await checkedFetch(path, {headers: {'Content-Type': 'application/json'}, ...opts});
+  const r = await checkedFetch(path, {cache: 'no-store', headers: {'Content-Type': 'application/json'}, ...opts});
   const result = await r.json();
   if (opts.method && opts.method !== 'GET' && /^\/api\/(chats|trash)(\/|$)/.test(path)) broadcastHistoryChange();
   return result;
@@ -989,6 +990,7 @@ resizeHandle.onkeydown = e => {
 
 let loggedIn = null;  // true / false / null (unknown)
 let loginError = '';  // e.g. Chrome not installed
+let statusRequest = 0;
 function setLogin(ok, nickname) {
   const was = loggedIn;
   loggedIn = ok;
@@ -998,21 +1000,28 @@ function setLogin(ok, nickname) {
   if (was !== ok && current === null) newChat();  // swap the welcome screen / login card
 }
 async function loadStatus(refresh) {
+  if (loginStarting || loginPoll) return;
+  const request = ++statusRequest;
   try {
     const s = await api('/api/status' + (refresh ? '?refresh=1' : ''));
+    if (request !== statusRequest) return;
     renderLimits(s.limits);
     if (s.needs_notice) { $('#loginText').textContent = '同意使用须知后检查登录'; return; }
+    if (s.login_pending) { $('#loginText').textContent = '正在等待扫码登录…'; return; }
     if (s.busy) { if (loggedIn === null) $('#loginText').textContent = s.limits?.cooldown_until ? '登录状态：冷却中不检查' : '浏览器忙碌中…'; return; }
     const wasError = loginError;
     loginError = !s.logged_in && s.error && s.error.includes('Chrome') ? s.error : '';
     if (loginError !== wasError && current === null && loggedIn === false) newChat();
-    setLogin(!!s.logged_in, s.nickname);
+    if (typeof s.logged_in === 'boolean') setLogin(s.logged_in, s.nickname);
+    else if (loginError) setLogin(false);
+    else $('#loginText').textContent = '暂时无法检查登录状态';
     if (loginError) $('#loginText').textContent = '没有找到 Chrome';
-  } catch { $('#loginText').textContent = '状态未知'; }
+  } catch { if (request === statusRequest) $('#loginText').textContent = '状态未知'; }
 }
 
 /* ---------- 小红书 login ---------- */
 let loginPoll = null;
+let loginStarting = false;
 function loginState(text, cls) {
   $('#loginText').textContent = text;
   const el = document.getElementById('loginState');
@@ -1020,18 +1029,26 @@ function loginState(text, cls) {
 }
 async function startLogin() {
   if (REMOTE) { loginState('请在电脑上打开助手，点「扫码登录」，用小红书 App 扫描电脑上的二维码。', 'err-text'); return; }
+  if (loginStarting || loginPoll) return;
+  loginStarting = true;
+  statusRequest++;
   document.querySelectorAll('[data-login]').forEach(b => b.disabled = true);
   try { await api('/api/login', {method: 'POST'}); }
-  catch (e) { loginState('打开登录窗口失败：' + e.message, 'err-text'); return; }
+  catch (e) {
+    document.querySelectorAll('[data-login]').forEach(b => b.disabled = false);
+    loginState('打开登录窗口失败：' + e.message, 'err-text');
+    return;
+  } finally { loginStarting = false; }
   loginState('已打开一个 Chrome 窗口，请用小红书 App 扫描里面的二维码…');
   clearInterval(loginPoll);
   loginPoll = setInterval(async () => {
+    const poll = loginPoll;
     let r;
     try { r = await api('/api/login/status'); } catch { return; }
-    if (r.state === 'waiting') return;
+    if (poll !== loginPoll || r.state === 'waiting') return;
     clearInterval(loginPoll); loginPoll = null;
     document.querySelectorAll('[data-login]').forEach(b => b.disabled = false);
-    if (r.state === 'done') { setLogin(true, r.message); loginState(`登录成功：${r.message}`, 'ok-text'); }
+    if (r.state === 'done') { loginError = ''; setLogin(true, r.message); loginState(`登录成功：${r.message}`, 'ok-text'); }
     else loginState(r.message || '登录没有完成，请再试一次', 'err-text');
   }, 2500);
 }
@@ -1055,7 +1072,10 @@ function renderLimits(l) {
   el.title = '';
   el.querySelector('[data-limits-why]').onclick = e => { e.preventDefault(); showLimitsWhy(l); };
 }
-setInterval(async () => { try { renderLimits((await api('/api/status')).limits); } catch {} }, 60000);
+setInterval(() => { if (!document.hidden && !loginStarting) loadStatus(); }, 5000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) { loadStatus(); loadSettings().catch(() => {}); }
+});
 
 
 const closeBtn = `<button class="close" style="float:right" onclick="document.getElementById('modal').classList.remove('show')">×</button>`;
@@ -1330,10 +1350,6 @@ function reconcileThread(chunks) {
 }
 
 function renderThread(chat, jump) {
-  const lastMsg = chat.messages[chat.messages.length - 1];
-  // A fresh "not logged in" from the scraper is authoritative; old chats shouldn't flip the status.
-  const fresh = lastMsg?.status === 'running' || Date.now() / 1000 - (lastMsg?.started || 0) < 300;
-  if (fresh && lastMsg.parts?.some(p => p.status === 'login') && loggedIn !== false && !loginPoll) setLogin(false);
   const sc = $('#scroll');
   const nearBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 120;
   lastChat = chat;
@@ -1698,7 +1714,7 @@ async function openSettings(message) {
       <label class="opt ${ui.mode === 'window' ? 'on' : ''}"><input type="radio" name="uimode" value="window" ${ui.mode === 'window' ? 'checked' : ''}>
         <div>独立窗口<small>像普通软件一样，有自己的窗口</small></div></label>
       <label class="opt ${ui.mode === 'browser' ? 'on' : ''}"><input type="radio" name="uimode" value="browser" ${ui.mode === 'browser' ? 'checked' : ''}>
-        <div>浏览器<small>在你的浏览器里打开；点 Dock 图标可以再次打开页面</small></div></label>
+        <div>浏览器<small>在默认浏览器里打开当前应用</small></div></label>
     </div>` : ''}
     <h3>浏览器窗口</h3><div class="seg">
       <label class="opt ${bw.mode === 'background' ? 'on' : ''}"><input type="radio" name="bwmode" value="background" ${bw.mode === 'background' ? 'checked' : ''}>
@@ -1714,11 +1730,12 @@ async function openSettings(message) {
     <label class="opt ${conf.web_search ? 'on' : ''}"><input type="checkbox" id="sWeb" ${conf.web_search ? 'checked' : ''}>
       <div>允许联网搜索<small>只用来查官方价格、参数、营业时间等客观信息，网页来源会标 🌐；真实体验仍以小红书为主。仅 Claude Code 和 Codex 支持，使用你自己的订阅额度</small></div></label>
     <h3>回答问题用的大模型</h3>
+    <p class="note">切换后用于新对话，已有对话继续使用原来的模型。</p>
     <label class="opt ${conf.claude_available ? '' : 'disabled'}"><input type="radio" name="backend" value="claude" ${conf.backend === 'claude' ? 'checked' : ''} ${conf.claude_available ? '' : 'disabled'}>
       <div>Claude Code<small>${conf.claude_available ? '使用本机已登录的 Claude Code（需要 Claude 订阅）' : '这台电脑没有安装 Claude Code'}</small></div></label>
     ${cliModelFields('Claude', conf.claude_model, [{id:'sonnet',name:'Sonnet'},{id:'opus',name:'Opus'},{id:'haiku',name:'Haiku'}], '默认（由 Claude Code 选择）')}
-    ${conf.codex_available || conf.backend === 'codex' ? `<label class="opt ${conf.codex_available ? '' : 'disabled'}"><input type="radio" name="backend" value="codex" ${conf.backend === 'codex' ? 'checked' : ''} ${conf.codex_available ? '' : 'disabled'}>
-      <div>Codex（ChatGPT 账号）<small>${conf.codex_available ? '使用本机已登录的 OpenAI Codex（例如用 ChatGPT 账号登录）' : '这台电脑没有安装 Codex'}</small></div></label>` : ''}
+    <label class="opt ${conf.codex_available ? '' : 'disabled'}"><input type="radio" name="backend" value="codex" ${conf.backend === 'codex' ? 'checked' : ''} ${conf.codex_available ? '' : 'disabled'}>
+      <div>Codex（ChatGPT 账号）<small>${conf.codex_available ? '使用本机已登录的 OpenAI Codex（例如用 ChatGPT 账号登录）' : '未检测到本机 Codex CLI。安装后重新打开设置。'}</small></div></label>
     ${cliModelFields('Codex', conf.codex_model || '', conf.codex_models || [], '默认（由 Codex 选择）')}
     <label class="opt"><input type="radio" name="backend" value="api" ${conf.backend === 'api' ? 'checked' : ''}>
       <div>大模型 API<small>DeepSeek、通义千问、Kimi、智谱、OpenAI 等，用你自己的 API Key，按用量付费</small></div></label>

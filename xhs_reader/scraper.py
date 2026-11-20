@@ -255,8 +255,8 @@ def login(timeout_s=300):
         raise NotLoggedIn("登录超时")
 
 
-def status():
-    with browser(headless=True) as ctx:
+def status(wait_s=900):
+    with browser(headless=True, wait_s=wait_s) as ctx:
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         ok, me = is_logged_in(page)
         return {"logged_in": ok, "nickname": me.get("nickname"), "user_id": me.get("user_id")}
