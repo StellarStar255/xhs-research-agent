@@ -5,6 +5,7 @@ Packaged app:    data in ~/.xhs-research-agent (the app bundle is read-only), th
                  the console executable `xhs-cli` shipped next to the GUI executable.
 XHS_DATA_DIR overrides the data directory in both cases.
 """
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -26,6 +27,12 @@ def _data_dir():
 
 
 DATA_DIR = _data_dir()
+
+
+def data_profile():
+    """Opaque local instance identity without exposing the user's data path."""
+    canonical = os.path.normcase(str(DATA_DIR.resolve()))
+    return hashlib.sha256(os.fsencode(canonical)).hexdigest()
 
 
 def downloads_dir():

@@ -46,6 +46,13 @@ class FrontendTests(IsolatedTest):
                     for page in (gui, web):
                         page.goto(url)
                         expect(page.locator('.login-card')).to_be_visible()
+                    gui.route('**/api/login', lambda route: route.fulfill(status=503,
+                              json={'detail': '找不到登录程序'}))
+                    gui.locator('.login-card [data-login]').click()
+                    expect(gui.locator('#loginState')).to_contain_text('找不到登录程序')
+                    gui.evaluate('loadStatus()')
+                    expect(gui.locator('#loginText')).to_contain_text('找不到登录程序')
+                    expect(gui.locator('.login-card [data-login]')).to_be_enabled()
                     login.update(logged_in=True, nickname='测试')
                     for page in (gui, web):
                         page.bring_to_front()

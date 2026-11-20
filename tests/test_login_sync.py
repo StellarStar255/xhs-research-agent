@@ -50,5 +50,25 @@ class LoginSyncTests(IsolatedTest):
     def test_login_failure_keeps_the_underlying_error(self):
         proc = Mock(returncode=1)
         proc.communicate.return_value = ('Traceback ...\n浏览器已关闭\n[PYI-1:ERROR] Failed to execute\n', None)
+        server._login.update(proc=proc, state='waiting')
         server._finish_login(proc)
         self.assertEqual(server.login_status(), {'state': 'failed', 'message': '登录没有完成：浏览器已关闭'})
+
+    def test_missing_login_program_returns_an_actionable_error_and_can_retry(self):
+        with patch.object(server.procutil, 'popen', side_effect=FileNotFoundError('xhs-cli.exe')):
+            with self.assertRaises(server.HTTPException) as error:
+                server.login()
+        self.assertEqual(error.exception.status_code, 503)
+        self.assertIn('xhs-cli.exe', error.exception.detail)
+        self.assertIsNone(server._login['proc'])
+
+    def test_shutdown_stops_pending_qr_and_discards_late_result(self):
+        proc = Mock(returncode=0)
+        proc.communicate.return_value = ('已登录：旧请求\n', None)
+        server._login.update(proc=proc, state='waiting')
+        with patch.object(server.procutil, 'kill_tree') as kill:
+            server.shutdown()
+        kill.assert_called_once_with(proc, timeout=1)
+        server._finish_login(proc)
+        self.assertEqual(server.login_status()['state'], 'idle')
+        self.assertIsNone(server._status['value'])

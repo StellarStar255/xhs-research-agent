@@ -708,13 +708,23 @@ def login():
     """Open a visible Chrome window with the QR code; poll /api/login/status for the result."""
     _require_notice()
     with _login_lock:
+        if server and server.should_exit:
+            raise HTTPException(503, "应用正在退出，请重新打开后再扫码")
         if _login["proc"] is None:
-            paths.DATA_DIR.mkdir(parents=True, exist_ok=True)
-            p = procutil.popen(paths.cli_command("login"), cwd=paths.DATA_DIR, env=paths.child_env(),
-                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, text=True)
+            try:
+                paths.DATA_DIR.mkdir(parents=True, exist_ok=True)
+                p = procutil.popen(paths.cli_command("login"), cwd=paths.DATA_DIR, env=paths.child_env(),
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, text=True)
+            except OSError as e:
+                raise HTTPException(503, f"无法启动登录程序：{e}") from e
             _login.update(state="waiting", message="", proc=p)
-            threading.Thread(target=_finish_login, args=(p,), daemon=True).start()
+            try:
+                threading.Thread(target=_finish_login, args=(p,), daemon=True).start()
+            except RuntimeError:
+                _login.update(state="failed", message="无法等待扫码结果，请重试", proc=None)
+                procutil.kill_tree(p, timeout=1)
+                raise HTTPException(503, _login["message"])
     return login_status()
 
 
@@ -724,6 +734,8 @@ def _finish_login(p):
     except OSError as e:
         out = str(e)
     with _login_lock:
+        if _login["proc"] is not p:
+            return
         m = re.search(r"^已登录：(.*)$", out, re.MULTILINE)
         if p.returncode == 0 and m:
             nickname = m.group(1).strip()
@@ -746,7 +758,7 @@ def login_status():
 def ping():
     """Lets a second launch find this already-running instance (and its version)."""
     from . import __version__
-    return {"app": paths.APP_ID, "version": __version__}
+    return {"app": paths.APP_ID, "version": __version__, "profile": paths.data_profile()}
 
 
 server = None       # the uvicorn.Server, set by xhs_reader.app
@@ -829,8 +841,14 @@ def shutdown():
     """Stop running turns and the server (the page's 退出 button, or the window closing)."""
     for cid in [c["id"] for c in agent.list_chats() if c["running"]]:
         agent.stop(cid)
-    if server:
-        server.should_exit = True
+    with _login_lock:
+        if server:
+            server.should_exit = True
+        login_proc = _login["proc"]
+        if login_proc is not None:
+            _login.update(proc=None, state="idle", message="")
+    if login_proc is not None:
+        procutil.kill_tree(login_proc, timeout=1)
     if on_shutdown:
         threading.Thread(target=on_shutdown, daemon=True).start()  # don't block the response
     return {"ok": True}

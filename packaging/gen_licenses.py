@@ -36,10 +36,13 @@ def closure(names):
 def main():
     reqs = [l.strip() for l in (ROOT / "requirements.txt").read_text().splitlines() if l.strip() and not l.startswith("#")]
     pkgs = closure(reqs)
-    body = subprocess.run(
-        [sys.executable, "-m", "piplicenses", "--packages", *pkgs, "--format=plain-vertical",
+    result = subprocess.run(
+        [sys.executable, "-X", "utf8", "-m", "piplicenses", "--packages", *pkgs, "--format=plain-vertical",
          "--with-license-file", "--no-license-path", "--with-urls"],
-        check=True, capture_output=True, text=True).stdout
+        capture_output=True, encoding="utf-8")
+    if result.returncode:
+        sys.exit(result.stderr.strip() or f"piplicenses exited with code {result.returncode}")
+    body = result.stdout
     py_license = Path(sysconfig.get_path("stdlib")) / "LICENSE.txt"
     out = [
         "种草调研助手 (xhs-research-agent) — third-party software notices",

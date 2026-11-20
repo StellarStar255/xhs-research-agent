@@ -990,12 +990,15 @@ resizeHandle.onkeydown = e => {
 
 let loggedIn = null;  // true / false / null (unknown)
 let loginError = '';  // e.g. Chrome not installed
+let loginFailure = '';
 let statusRequest = 0;
 function setLogin(ok, nickname) {
   const was = loggedIn;
   loggedIn = ok;
+  if (ok) loginFailure = '';
   $('#dot').className = 'dot ' + (ok ? 'on' : 'off');
-  $('#loginText').textContent = ok ? `已登录：${nickname || ''}` : (REMOTE ? '未登录，请在电脑上扫码登录' : '未登录小红书');
+  $('#loginText').textContent = ok ? `已登录：${nickname || ''}`
+    : loginFailure || (REMOTE ? '未登录，请在电脑上扫码登录' : '未登录小红书');
   $('#loginBtn').hidden = !!ok;
   if (was !== ok && current === null) newChat();  // swap the welcome screen / login card
 }
@@ -1023,6 +1026,7 @@ async function loadStatus(refresh) {
 let loginPoll = null;
 let loginStarting = false;
 function loginState(text, cls) {
+  loginFailure = cls === 'err-text' ? text : '';
   $('#loginText').textContent = text;
   const el = document.getElementById('loginState');
   if (el) { el.textContent = text; el.className = 'state ' + (cls || ''); }
@@ -1032,6 +1036,7 @@ async function startLogin() {
   if (loginStarting || loginPoll) return;
   loginStarting = true;
   statusRequest++;
+  loginState('正在启动登录程序…');
   document.querySelectorAll('[data-login]').forEach(b => b.disabled = true);
   try { await api('/api/login', {method: 'POST'}); }
   catch (e) {
@@ -1039,7 +1044,7 @@ async function startLogin() {
     loginState('打开登录窗口失败：' + e.message, 'err-text');
     return;
   } finally { loginStarting = false; }
-  loginState('已打开一个 Chrome 窗口，请用小红书 App 扫描里面的二维码…');
+  loginState('正在打开登录浏览器，二维码出现后请用小红书 App 扫码…');
   clearInterval(loginPoll);
   loginPoll = setInterval(async () => {
     const poll = loginPoll;
@@ -1155,7 +1160,7 @@ function newChat() {
       ${loginError ? `<p class="err-text" style="font-size:14px">${esc(loginError)}</p>
         <button class="big-btn" onclick="loadStatus(true)">我已安装 Chrome，重新检查</button>`
       : `<button class="big-btn" data-login>扫码登录小红书</button>`}
-      <div class="state" id="loginState"></div>
+      <div class="state ${loginFailure ? 'err-text' : ''}" id="loginState">${esc(loginFailure)}</div>
       <div class="note">登录信息只保存在这台电脑的 data/ 目录里。不登录也可以发图片让助手分析，但查不了小红书。</div>
     </div></div>`;
     updateComposer(); loadChats(); return;

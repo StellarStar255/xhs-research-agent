@@ -15,6 +15,7 @@ import urllib.request
 import webbrowser
 
 from . import paths
+from .persistence import file_lock
 
 DEFAULT_PORT = 8766
 # Instance discovery and shutdown are loopback-only, including when the user
@@ -33,7 +34,7 @@ def _ping(port):
 
 
 def _is_ours(port):
-    return _ping(port) is not None
+    return (_ping(port) or {}).get("profile") == paths.data_profile()
 
 
 def _vtuple(v):
@@ -60,28 +61,49 @@ def _replace_older(port, info):
     return False
 
 
-def _is_free(port):
-    with socket.socket() as s:
-        if sys.platform != "win32":  # match uvicorn, so a just-closed port counts as free
+def _bind_port(port):
+    s = socket.socket()
+    try:
+        if sys.platform == "win32":
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            s.bind(("127.0.0.1", port))
+        s.bind(("127.0.0.1", port))
+        return s
+    except OSError:
+        s.close()
+        raise
+
+
+def _is_free(port):
+    try:
+        with _bind_port(port):
             return True
-        except OSError:
-            return False
+    except OSError:
+        return False
 
 
 def _pick_port():
-    """(port, already_running). Skips ports other programs are using."""
+    """Prefer a running instance for this data directory over an earlier free port."""
     first = int(os.environ.get("XHS_PORT", DEFAULT_PORT))
+    profile = paths.data_profile()
+    legacy_port = DEFAULT_PORT if paths.FROZEN and not os.environ.get("XHS_DATA_DIR") else None
+    legacy = None
+    free = None
     for port in range(first, first + 20):
-        info = _ping(port)
-        if info:
-            if _replace_older(port, info):
-                return port, False
-            return port, True
         if _is_free(port):
-            return port, False
+            if free is None:
+                free = port
+            continue
+        info = _ping(port)
+        if info and info.get("profile") == profile:
+            return port, not _replace_older(port, info)
+        if info and port == legacy_port and "profile" not in info:
+            legacy = info
+    if legacy:
+        return legacy_port, not _replace_older(legacy_port, legacy)
+    if free is not None:
+        return free, False
     raise SystemExit("找不到可用的端口")
 
 
@@ -449,16 +471,7 @@ def _run_window(url, port):
     return True
 
 
-def serve():
-    port, running = _pick_port()
-    url = f"http://localhost:{port}"
-    ui = os.environ.get("XHS_UI", "native")      # "browser" = no native app shell at all
-    no_browser = os.environ.get("XHS_NO_BROWSER")  # for tests / headless use
-    if running:
-        if not no_browser:
-            webbrowser.open(url)
-        return
-
+def _start_server(port, listener):
     import uvicorn
     from . import agent, server
 
@@ -468,7 +481,6 @@ def serve():
     config = uvicorn.Config(server.app, host="127.0.0.1", port=port, log_level="warning",
                             log_config=None if paths.FROZEN else uvicorn.config.LOGGING_CONFIG)
     server.server = uvicorn.Server(config)
-    print(f"种草调研助手：{url}", flush=True)
     from . import remote
     remote.main_port = port
     try:
@@ -476,21 +488,74 @@ def serve():
     except Exception as e:
         logging.warning("phone access not started: %s", e)
 
-    if no_browser:
-        server.server.run()
+    # The GUI toolkit needs the main thread, so the web server runs in the background.
+    def run():
+        with listener:
+            server.server.run(sockets=[listener])
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
+
+
+def serve():
+    # Serialize rapid launches of the same profile through server startup.
+    with file_lock(paths.DATA_DIR / "startup.guard"):
+        thread = None
+        for _ in range(3):
+            port, running = _pick_port()
+            if running:
+                break
+            try:
+                listener = _bind_port(port)
+            except OSError:
+                continue  # Another profile or program bound the port since discovery.
+            try:
+                thread = _start_server(port, listener)
+            except BaseException:
+                listener.close()
+                raise
+            break
+        else:
+            raise SystemExit("无法绑定本机端口，请重试")
+        if thread:
+            from . import server
+            deadline = time.monotonic() + 20
+            while not server.server.started and thread.is_alive() and time.monotonic() < deadline:
+                thread.join(0.05)
+            if not server.server.started:
+                server.shutdown()
+                thread.join(timeout=10)
+                raise SystemExit("应用启动失败，请查看数据目录里的 app.log")
+    url = f"http://localhost:{port}"
+    print(f"种草调研助手：{url}", flush=True)
+    ui = os.environ.get("XHS_UI", "native")
+    no_browser = os.environ.get("XHS_NO_BROWSER")
+    if running:
+        if not no_browser:
+            webbrowser.open(url)
         return
 
-    # The GUI toolkit needs the main thread, so the web server runs in the background.
-    thread = threading.Thread(target=server.server.run, daemon=True)
-    thread.start()
+    from . import server
+    if server.server.should_exit:
+        thread.join(timeout=10)
+        return
+    if no_browser:
+        try:
+            while thread.is_alive():
+                thread.join(0.5)
+        except KeyboardInterrupt:
+            server.shutdown()
+            thread.join(timeout=10)
+        return
+
     if ui != "browser" and _run_window(url, port):
         server.on_shutdown = server.set_ui = None  # the window is already gone
         server.shutdown()  # window closed: stop running turns and the server
         thread.join(timeout=10)
         return
     # Browser fallback (no native webview, or XHS_UI=browser).
-    if _wait_ready(port):
-        webbrowser.open(url)
+    webbrowser.open(url)
     thread.join()
 
 
