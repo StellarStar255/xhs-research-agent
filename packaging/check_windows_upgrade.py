@@ -13,8 +13,6 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
-
 
 def sha256(path):
     with path.open("rb") as file:
@@ -31,6 +29,43 @@ def wait_for(description, probe, timeout):
             pass  # launcher or installer is still starting
         time.sleep(0.25)
     raise RuntimeError(f"Timed out waiting for {description}")
+
+
+def check_settings(root):
+    # Drive the installed window through Windows UI Automation, without relying
+    # on a WebView2 debugging endpoint or restarting the newly installed app.
+    script = root / "check-settings.ps1"
+    script.write_text("""$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+$element = [System.Windows.Automation.AutomationElement]
+$scope = [System.Windows.Automation.TreeScope]
+$condition = [System.Windows.Automation.PropertyCondition]
+$title = $condition::new($element::NameProperty, '种草调研助手')
+$button = $condition::new($element::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
+$manage = $condition::new($element::NameProperty, '历史记录管理')
+$deadline = [DateTime]::UtcNow.AddSeconds(45)
+$clicked = $false
+while ([DateTime]::UtcNow -lt $deadline) {
+    $window = $element::RootElement.FindFirst($scope::Children, $title)
+    if ($window) {
+        if ($clicked) {
+            if ($window.FindFirst($scope::Descendants, $manage)) { exit 0 }
+        } else {
+            foreach ($control in $window.FindAll($scope::Descendants, $button)) {
+                if ($control.Current.Name -like '*设置 ·*') {
+                    $control.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+                    $clicked = $true
+                    break
+                }
+            }
+        }
+    }
+    Start-Sleep -Milliseconds 300
+}
+throw "Settings did not open on first relaunch (clicked=$clicked)"
+""", encoding="utf-8-sig")
+    subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                    "-File", str(script)], check=True, timeout=60)
 
 
 def check(previous, setup, expected_exe, root):
@@ -94,21 +129,11 @@ def check(previous, setup, expected_exe, root):
             self.end_headers()
             self.wfile.write(output)
 
-    with socket.socket() as port_probe, socket.socket() as debug_probe:
+    with socket.socket() as port_probe:
         port_probe.bind(("127.0.0.1", 0))
         port = port_probe.getsockname()[1]
-        debug_probe.bind(("127.0.0.1", 0))
-        debug_port = debug_probe.getsockname()[1]
         fixture = ThreadingHTTPServer(("127.0.0.1", 0), ReleaseFixture)
-    print(f"Ports: app={port}, WebView2={debug_port}, update fixture={fixture.server_port}")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    debug_url = f"http://127.0.0.1:{debug_port}"
-
-    def gui_target(previous_target=None):
-        with opener.open(debug_url + "/json/list", timeout=3) as response:
-            return next((page["id"] for page in json.load(response)
-                         if page.get("url", "").startswith(f"http://localhost:{port}/")
-                         and page["id"] != previous_target), None)
 
     def api(path, method="GET"):
         req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method)
@@ -120,13 +145,11 @@ def check(previous, setup, expected_exe, root):
         thread = threading.Thread(target=fixture.serve_forever, daemon=True)
         thread.start()
         env = dict(os.environ, XHS_DATA_DIR=str(data), XHS_PORT=str(port),
-                   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f"--remote-debugging-port={debug_port}",
                    XHS_UPDATE_API=f"http://127.0.0.1:{fixture.server_port}/latest")
         env.pop("XHS_NO_BROWSER", None)
         original = subprocess.Popen([str(exe)], env=env)
         try:
             wait_for("the previous installed app", lambda: api("/api/ping"), 30)
-            previous_target = wait_for("the previous WebView2 window", gui_target, 45)
             api("/api/update/check", "POST")
             wait_for("the update to become available", lambda: api("/api/update").get("available"), 15)
             api("/api/update/start", "POST")
@@ -141,13 +164,7 @@ def check(previous, setup, expected_exe, root):
             assert new["app"] == "xhs-research-agent"
             assert api("/api/chats/upgrade-fixture")["title"] == record["title"]
             assert api("/api/notice")["accepted"]
-            wait_for("WebView2 on first launch after the update", lambda: gui_target(previous_target), 45)
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.connect_over_cdp(debug_url, timeout=10000)
-                page = next(page for context in browser.contexts for page in context.pages
-                            if page.url.startswith(f"http://localhost:{port}/"))
-                page.locator("#gear").click(timeout=15000)
-                page.locator("#modal.show #sSave").wait_for(state="visible", timeout=20000)
+            check_settings(root)
             print(f"PASS: real Windows installer preserved data and Settings opened on first relaunch on port {port}")
         finally:
             try:
