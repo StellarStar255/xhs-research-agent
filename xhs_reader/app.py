@@ -528,7 +528,7 @@ def serve():
                 thread.join(timeout=10)
                 raise SystemExit("应用启动失败，请查看数据目录里的 app.log")
     url = f"http://localhost:{port}"
-    print(f"种草调研助手：{url}", flush=True)
+    print(f"XHS Research Agent: {url}", flush=True)
     ui = os.environ.get("XHS_UI", "native")
     no_browser = os.environ.get("XHS_NO_BROWSER")
     if running:

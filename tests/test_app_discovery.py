@@ -48,7 +48,8 @@ class AppDiscoveryTests(unittest.TestCase):
         processes = []
         with tempfile.TemporaryDirectory(prefix='xhs-launch-test-') as folder:
             env = dict(os.environ, XHS_NO_BROWSER='1', XHS_PORT=str(port), XHS_DATA_DIR=folder,
-                       XHS_UPDATE_API='http://127.0.0.1:1/no-update')
+                       XHS_UPDATE_API='http://127.0.0.1:1/no-update',
+                       PYTHONUTF8='0', PYTHONIOENCODING='cp1252')
 
             def launch():
                 child = subprocess.Popen([sys.executable, '-m', 'xhs_reader'], env=env,
