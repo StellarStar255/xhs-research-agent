@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 import threading
 import time
 from contextlib import nullcontext
@@ -83,3 +86,17 @@ class LoginSyncTests(IsolatedTest):
                 scraper.login()
         browser.assert_called_once_with(headless=False, wait_s=30)
         page.remove_listener.assert_called_once()
+
+    def test_cli_login_result_is_utf8_with_cp1252_console(self):
+        command = (
+            "from xhs_reader import cli, scraper; "
+            "scraper.login = lambda: {'nickname': '\\u6d4b\\u8bd5'}; "
+            "raise SystemExit(cli.main(['login']))"
+        )
+        child = subprocess.run(
+            [sys.executable, "-c", command],
+            env=dict(os.environ, XHS_DATA_DIR=str(self.tmp), PYTHONUTF8="0", PYTHONIOENCODING="cp1252"),
+            capture_output=True, timeout=10,
+        )
+        self.assertEqual(child.returncode, 0, child.stderr)
+        self.assertEqual(child.stdout.decode("utf-8").strip(), "已登录：测试")

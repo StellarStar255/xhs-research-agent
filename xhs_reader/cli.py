@@ -202,6 +202,10 @@ def main(argv=None):
     im.add_argument("--json", action="store_true", help="structured image result for tool runners")
     a = ap.parse_args(argv)
 
+    if a.cmd in ("login", "status"):
+        # Both commands can emit names from Xiaohongshu, independent of the console locale.
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
     if a.cmd == "login":
         try:
             me = scraper.login()

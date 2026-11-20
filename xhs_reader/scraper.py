@@ -280,7 +280,6 @@ def login(timeout_s=300):
                     page.get_by_role("button", name="登录", exact=True).first.click(timeout=8000)
                 except PlaywrightTimeout:
                     pass  # The user can still open the login panel manually.
-            print("请在弹出的浏览器窗口中用小红书 App 扫码登录……", flush=True)
             deadline = time.monotonic() + timeout_s
             while time.monotonic() < deadline:
                 if found is not None:
