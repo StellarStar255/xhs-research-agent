@@ -207,6 +207,8 @@ def _generate(context, exclude=()):
     conf = settings.load()
     prompt = _prompt(context, exclude)
     backend = conf["backend"]
+    if backend == "antigravity":
+        return []  # Use the built-in starters without launching another Google session.
     if backend == "api":
         if not settings.api_ready(conf):
             return []

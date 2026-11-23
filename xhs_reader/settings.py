@@ -99,9 +99,13 @@ _found = {}  # cache successful lookups
 
 
 def _windows_cli_candidates(name):
-    if name != "codex" or os.name != "nt":
+    if os.name != "nt":
         return []
     local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    if name == "agy":
+        return [local / "agy" / "bin" / "agy.exe"]
+    if name != "codex":
+        return []
     return [
         local / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe",
         local / "Microsoft" / "WinGet" / "Links" / "codex.exe",
@@ -159,6 +163,10 @@ def find_claude():
 
 def find_codex():
     return find_cli("codex", "XHS_CODEX_PATH")
+
+
+def find_antigravity():
+    return find_cli("agy", "XHS_AGY_PATH")
 
 
 def claude_available():
@@ -236,7 +244,8 @@ def public(s=None):
             "claude_effort": s["claude_effort"], "codex_effort": s["codex_effort"],
             "claude_efforts": claude_efforts(),
             "codex_models": codex_models(), "api": api, "claude_available": claude_available(),
-            "codex_available": codex_available(), "providers": PROVIDERS}
+            "codex_available": codex_available(), "antigravity_available": bool(find_antigravity()),
+            "providers": PROVIDERS}
 
 
 def api_ready(s=None):

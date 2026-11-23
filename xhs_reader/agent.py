@@ -436,6 +436,8 @@ def send(cid, text, images=(), names=None):
                 raise RuntimeError("这台电脑上没有找到 Claude Code，请在「设置」里改用大模型 API")
             if conf["backend"] == "codex" and not settings.codex_available():
                 raise RuntimeError("这台电脑上没有找到 Codex，请在「设置」里换别的模型")
+            if conf["backend"] == "antigravity" and not settings.find_antigravity():
+                raise RuntimeError("这台电脑上没有找到 Antigravity CLI（agy）")
             cid = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
             title = text.strip().splitlines()[0][:30] if text.strip() else "图片分析"
             chat = {"id": cid, "title": title, "backend": conf["backend"], "claude_session": None,
@@ -470,6 +472,9 @@ def send(cid, text, images=(), names=None):
             elif backend == "codex":
                 from . import codex_backend
                 run = codex_backend.start(chat, text, names, turn_id)
+            elif backend == "antigravity":
+                from . import antigravity_backend
+                run = antigravity_backend.start(chat, text, images, turn_id)
             else:
                 run = _start_claude(chat, text, images, turn_id)
             _runs[cid] = run  # register before any worker can finish
@@ -509,6 +514,8 @@ def _keep_awake(on):
 
 
 def _model_label(chat):
+    if chat.get("backend") == "antigravity":
+        return "Antigravity CLI"
     if chat.get("backend") == "codex":
         model = chat.get("model_config", {}).get("codex_model", "")
         effort = chat.get("model_config", {}).get("codex_effort", "")

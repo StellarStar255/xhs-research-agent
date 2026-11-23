@@ -145,7 +145,7 @@ class SettingsReq(BaseModel):
 
 def _merged(req: SettingsReq, s=None):
     s = settings.load() if s is None else s
-    if req.backend not in ("claude", "codex", "api"):
+    if req.backend not in ("claude", "codex", "antigravity", "api"):
         raise HTTPException(400, "未知的后端")
     s["backend"] = req.backend
     for field, label in (("claude_model", "Claude"), ("codex_model", "Codex")):
@@ -637,6 +637,8 @@ def get_settings():
 def save_settings(req: SettingsReq):
     def merge(s):
         _merged(req, s)
+        if s["backend"] == "antigravity" and not settings.find_antigravity():
+            raise HTTPException(400, "未找到 Antigravity CLI（agy），请先安装并登录")
         if s["backend"] == "api" and not settings.api_ready(s):
             raise HTTPException(400, "使用大模型 API 需要填写接口地址、模型名和 API Key")
     s = settings.update(merge)

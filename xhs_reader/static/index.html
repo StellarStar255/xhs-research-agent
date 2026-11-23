@@ -1647,6 +1647,7 @@ async function loadSettings(options) {
   conf = await api('/api/settings', options);
   const p = conf.providers.find(p => p.id === conf.api.provider);
   $('#backendLabel').textContent = conf.backend === 'claude' ? 'Claude Code' + (conf.claude_model ? ' · ' + conf.claude_model : '') : conf.backend === 'codex' ? 'Codex' + (conf.codex_model ? ' · ' + conf.codex_model : '')
+    : conf.backend === 'antigravity' ? 'Antigravity CLI'
     : (conf.api.has_key ? (p && p.id !== 'custom' ? p.name.split('（')[0] : '') + ' ' + conf.api.model : '未配置 API');
   return conf;
 }
@@ -1778,6 +1779,8 @@ function renderSettings(message, ui, bw, mob) {
     <label class="opt ${conf.codex_available ? '' : 'disabled'}"><input type="radio" name="backend" value="codex" ${conf.backend === 'codex' ? 'checked' : ''} ${conf.codex_available ? '' : 'disabled'}>
       <div>Codex（ChatGPT 账号）<small>${conf.codex_available ? '使用本机已登录的 OpenAI Codex（例如用 ChatGPT 账号登录）' : '未检测到本机 Codex CLI。安装后重新打开设置。'}</small></div></label>
     ${cliModelFields('Codex', conf.codex_model || '', conf.codex_models || [], '默认（由 Codex 选择）')}
+    <label class="opt ${conf.antigravity_available ? '' : 'disabled'}"><input type="radio" name="backend" value="antigravity" ${conf.backend === 'antigravity' ? 'checked' : ''} ${conf.antigravity_available ? '' : 'disabled'}>
+      <div>Antigravity CLI（Google 账号）<small>${conf.antigravity_available ? '使用本机 agy 的登录和默认模型' : '未检测到 agy。安装 Antigravity CLI，在终端运行 agy 登录后重新打开设置。'}</small></div></label>
     <label class="opt"><input type="radio" name="backend" value="api" ${conf.backend === 'api' ? 'checked' : ''}>
       <div>大模型 API<small>Gemini、DeepSeek、通义千问、Kimi、智谱、OpenAI 等，用你自己的 API Key，按用量付费</small></div></label>
     <div class="api" id="sApi">

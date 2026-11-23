@@ -106,7 +106,7 @@ def import_from(source, preview=False):
             for key in ("created", "updated"):
                 if c.get(key) is not None and not isinstance(c[key], str):
                     raise ValueError("备份中的日期格式无效")
-            if c.get("backend", "claude") not in ("api", "claude", "codex") or not isinstance(c.get("model_config", {}), dict):
+            if c.get("backend", "claude") not in ("api", "claude", "codex", "antigravity") or not isinstance(c.get("model_config", {}), dict):
                 raise ValueError("备份中的模型配置无效")
             api = c.get("model_config", {}).get("api", {})
             if not isinstance(api, dict):

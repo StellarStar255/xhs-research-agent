@@ -102,7 +102,7 @@ class FrontendTests(IsolatedTest):
 
     def test_incremental_updates_preserve_history_and_block_html(self):
         import uvicorn
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import expect, sync_playwright
 
         settings.accept_notice()
         chat = self.chat()
@@ -265,6 +265,17 @@ class FrontendTests(IsolatedTest):
                 page.wait_for_function("!document.querySelector('#modal').classList.contains('show')")
                 self.assertEqual(settings.load()['api']['provider'], 'gemini')
                 self.assertEqual(settings.load()['api']['api_key'], 'fake-gemini-key')
+                agy_radio = page.locator('input[name=backend][value=antigravity]')
+                with patch.object(settings, 'find_antigravity', return_value=None):
+                    page.evaluate('openSettings()')
+                    expect(agy_radio).to_be_disabled()
+                with patch.object(settings, 'find_antigravity', return_value='/test/agy'):
+                    page.evaluate('openSettings()')
+                    agy_radio.check()
+                    page.locator('#sSave').click()
+                    page.wait_for_function("!document.querySelector('#modal').classList.contains('show')")
+                    expect(page.locator('#backendLabel')).to_have_text('Antigravity CLI')
+                self.assertEqual(settings.load()['backend'], 'antigravity')
                 self.assertFalse(errors, errors)
             finally:
                 browser.close()

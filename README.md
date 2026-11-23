@@ -28,12 +28,15 @@
 |---|---|---|
 | **Claude Code** | 已经订阅 Claude、装了 Claude Code 的人 | 计入 Claude 订阅用量 |
 | **Codex** | 装了 OpenAI Codex CLI 并登录（比如用 ChatGPT 账号 `codex login`）的人 | 计入 ChatGPT / OpenAI 的用量 |
+| **Antigravity CLI** | 装了 Antigravity CLI（`agy`）并用 Google 账号登录的人 | 计入 Google 账号的 Antigravity 用量 |
 | **大模型 API** | 其他所有人 | 自己注册平台、充值、填 API Key，按用量付费。费用取决于所选模型和问题的复杂度，以平台定价为准 |
 
 大模型 API 内置了几个服务商的预设：DeepSeek、通义千问（阿里云百炼）、Kimi、智谱 GLM、OpenAI、Google Gemini。也可以填任何兼容 OpenAI 格式的接口地址。
 设置里可以「获取模型列表」和「测试连接」。
 
 使用 Gemini 时，在「设置 → 大模型 API → 服务商」选择「Google Gemini」，填入 [Google AI Studio](https://aistudio.google.com/apikey) 的 Gemini API Key。默认使用支持图片和调研工具的 `gemini-3.8-flash`，也可以填写账号可用的其他模型 ID。测试连接并保存后，新建对话即可使用。
+
+也可以在「设置」选择「Antigravity CLI（Google 账号）」。先安装 [支持 ACP 的 Antigravity CLI](https://antigravity.google/docs/cli/acp/)，在终端运行 `agy` 完成 Google 登录，再回到应用保存设置并新建对话。应用使用 CLI 的默认模型。自定义安装位置可通过 `XHS_AGY_PATH` 指定。
 
 Claude Code 和 Codex 也可以选择具体模型：Claude 支持 Sonnet、Opus、Haiku 别名或手动填写模型 ID；Codex 显示本机 CLI 缓存中的候选模型，也支持手动填写。实际可用模型由你的账户和本机 CLI 决定。
 
