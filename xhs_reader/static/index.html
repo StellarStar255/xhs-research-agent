@@ -1779,7 +1779,7 @@ function renderSettings(message, ui, bw, mob) {
       <div>Codex（ChatGPT 账号）<small>${conf.codex_available ? '使用本机已登录的 OpenAI Codex（例如用 ChatGPT 账号登录）' : '未检测到本机 Codex CLI。安装后重新打开设置。'}</small></div></label>
     ${cliModelFields('Codex', conf.codex_model || '', conf.codex_models || [], '默认（由 Codex 选择）')}
     <label class="opt"><input type="radio" name="backend" value="api" ${conf.backend === 'api' ? 'checked' : ''}>
-      <div>大模型 API<small>DeepSeek、通义千问、Kimi、智谱、OpenAI 等，用你自己的 API Key，按用量付费</small></div></label>
+      <div>大模型 API<small>Gemini、DeepSeek、通义千问、Kimi、智谱、OpenAI 等，用你自己的 API Key，按用量付费</small></div></label>
     <div class="api" id="sApi">
       <label class="field"><span>服务商</span><select id="sProvider">${conf.providers.map(p =>
         `<option value="${p.id}" ${p.id === a.provider ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
@@ -1849,6 +1849,10 @@ function renderSettings(message, ui, bw, mob) {
   $('#sProvider').onchange = () => {
     const p = conf.providers.find(p => p.id === $('#sProvider').value);
     if (p.id !== 'custom') { $('#sBase').value = p.base_url; $('#sModel').value = p.model; }
+    $('#sModels').replaceChildren();
+    $('#sKey').value = '';
+    const saved = $('#sBase').value.replace(/\/+$/, '') === a.base_url.replace(/\/+$/, '') && a.has_key;
+    $('#sKey').placeholder = saved ? '已保存 ' + a.key_hint + '，留空则不修改' : '粘贴 API Key，或留空使用此接口已保存的 Key';
     showProviderNote();
   };
   const out = (text, ok) => { $('#sOut').className = 'msg-out ' + (ok ? 'ok-text' : 'err-text'); $('#sOut').textContent = text; };

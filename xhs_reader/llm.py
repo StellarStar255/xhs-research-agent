@@ -220,6 +220,7 @@ def run_turn(run):
         stream = _chunks(run, cl, model=model, stream=True, tools=TOOLS, tool_choice="none" if last else "auto",
                          messages=[{"role": "system", "content": prompt}] + _inline_images(cid, api_messages(history)))
         content, calls, flushed = "", {}, 0.0
+        assistant = {"role": "assistant"}
         for chunk in stream:
             if run.stopped:
                 break
@@ -231,24 +232,31 @@ def run_turn(run):
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
+            if extra := getattr(delta, "extra_content", None):
+                assistant["extra_content"] = extra
             if delta.content:
                 content += delta.content
                 if time.time() - flushed > 0.3:  # throttle disk writes while streaming
                     flushed = time.time()
                     agent.update(cid, lambda c, m, t=content: m.update(draft=t))
             for tc in delta.tool_calls or []:
-                c = calls.setdefault(tc.index, {"id": "", "name": "", "args": ""})
+                c = calls.setdefault(tc.index, {"id": "", "type": "function",
+                                                "function": {"name": "", "arguments": ""}})
                 c["id"] = tc.id or c["id"]
                 if tc.function:
-                    c["name"] += tc.function.name or ""
-                    c["args"] += tc.function.arguments or ""
+                    c["function"]["name"] += tc.function.name or ""
+                    c["function"]["arguments"] += tc.function.arguments or ""
+                # Gemini requires its thought signature back with each signed tool call.
+                if extra := getattr(tc, "extra_content", None):
+                    c["extra_content"] = extra
 
-        assistant = {"role": "assistant", "content": content}
+        assistant["content"] = content
         if calls:
-            assistant["tool_calls"] = [
-                {"id": c["id"] or f"call_{step}_{i}", "type": "function",
-                 "function": {"name": c["name"], "arguments": c["args"] or "{}"}}
-                for i, c in sorted(calls.items())]
+            assistant["tool_calls"] = []
+            for i, call in sorted(calls.items()):
+                call["id"] = call["id"] or f"call_{step}_{i}"
+                call["function"]["arguments"] = call["function"]["arguments"] or "{}"
+                assistant["tool_calls"].append(call)
         history.append(assistant)
 
         def add_text(chat, msg, text=content):
@@ -320,11 +328,15 @@ def _replace_step(msg, step):
 def test(conf):
     """Quick connectivity check for the settings dialog."""
     cl, model = client(conf)
-    r = cl.chat.completions.create(model=model, max_tokens=20,
-                                   messages=[{"role": "user", "content": "只回复两个字：你好"}])
-    return (r.choices[0].message.content or "").strip()
+    # The output limit also covers Gemini's thinking tokens.
+    limit = 1024 if conf["api"].get("provider") == "gemini" else 20
+    with cl:
+        r = cl.chat.completions.create(model=model, max_tokens=limit,
+                                       messages=[{"role": "user", "content": "只回复两个字：你好"}])
+        return (r.choices[0].message.content or "").strip()
 
 
 def list_models(conf):
     cl, _ = client(conf)
-    return sorted(m.id for m in cl.models.list())
+    with cl:
+        return sorted(m.id for m in cl.models.list())

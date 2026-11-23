@@ -34,6 +34,10 @@ PROVIDERS = [
      "note": "要分析图片请选带 v 的模型，例如 glm-4v-plus"},
     {"id": "openai", "name": "OpenAI", "base_url": "https://api.openai.com/v1",
      "model": "gpt-4o", "key_url": "https://platform.openai.com/api-keys", "note": ""},
+    {"id": "gemini", "name": "Google Gemini",
+     "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+     "model": "gemini-3.8-flash", "key_url": "https://aistudio.google.com/apikey",
+     "note": "使用 Google AI Studio 的 Gemini API Key，默认模型支持图片和调研工具"},
     {"id": "custom", "name": "自定义（OpenAI 兼容接口）", "base_url": "", "model": "", "key_url": "", "note": ""},
 ]
 

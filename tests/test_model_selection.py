@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -13,6 +14,60 @@ from xhs_reader.persistence import atomic_json
 
 
 class ModelSelectionTests(IsolatedTest):
+    def test_gemini_replays_streamed_tool_signature(self):
+        import openai
+
+        if hasattr(openai, "DefaultHttpx2Client"):
+            import httpx2 as httpx
+        else:
+            import httpx
+
+        preset = next(p for p in settings.PROVIDERS if p["id"] == "gemini")
+        api = server.ApiConf(provider=preset["id"], base_url=preset["base_url"],
+                             model=preset["model"], api_key="test-key")
+        server.save_settings(server.SettingsReq(backend="api", api=api))
+        chat = self.chat(model_config={"api": api.model_dump(exclude={"api_key"})})
+        image_dir = agent.image_dir(chat["id"])
+        image_dir.mkdir(parents=True, exist_ok=True)
+        (image_dir / "sample.png").write_bytes(b"image fixture")
+        chat["messages"][0]["images"] = ["sample.png"]
+        agent._save(chat)
+        extra = {"google": {"thought_signature": "opaque-signature"}}
+        requests = []
+
+        def respond(request):
+            self.assertEqual(str(request.url), preset["base_url"] + "/chat/completions")
+            self.assertEqual(request.headers["Authorization"], "Bearer test-key")
+            requests.append(json.loads(request.content))
+            deltas = [
+                {"tool_calls": [{"index": 0, "id": "call-search", "type": "function",
+                                 "function": {"name": "search_xiaohongshu", "arguments": "{"},
+                                 "extra_content": extra}]},
+                {"tool_calls": [{"index": 0, "function": {"arguments": "}"}}]},
+            ] if len(requests) == 1 else [{"content": "调研答案"}]
+            frames = [{"id": "response", "object": "chat.completion.chunk", "created": 0,
+                       "model": preset["model"], "choices": [{"index": 0, "delta": delta}]}
+                      for delta in deltas]
+            stream = "".join(f"data: {json.dumps(frame)}\n\n" for frame in frames)
+            return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
+                                  text=stream + "data: [DONE]\n\n")
+
+        with openai.OpenAI(api_key="test-key", base_url=preset["base_url"],
+                    http_client=httpx.Client(transport=httpx.MockTransport(respond))) as client, \
+             patch("openai.OpenAI", return_value=client), \
+             patch.object(llm, "_call_tool", return_value="调研结果"):
+            llm.run_turn(llm.ApiRun("test-chat"))
+
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[0]["model"], preset["model"])
+        image = requests[0]["messages"][-1]["content"][-1]
+        self.assertTrue(image["image_url"]["url"].startswith("data:image/png;base64,"))
+        assistant, tool = requests[1]["messages"][-2:]
+        self.assertEqual(assistant["tool_calls"][0]["extra_content"], extra)
+        self.assertEqual(assistant["tool_calls"][0]["function"]["arguments"], "{}")
+        self.assertEqual(tool["tool_call_id"], "call-search")
+        self.assertEqual(agent.load("test-chat")["llm_history"][-1]["content"], "调研答案")
+
     def test_codex_keeps_the_message_from_a_cli_error_event(self):
         msg = {"status": "running"}
         codex_backend._handle({}, msg, {"type": "error", "message": "Codex model is unavailable"})
