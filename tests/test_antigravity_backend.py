@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from test_optimizations import IsolatedTest
-from xhs_reader import agent, antigravity_backend, procutil, server, settings
+from xhs_reader import agent, antigravity_backend, mcp_server, procutil, server, settings
 
 
 class AntigravityTests(IsolatedTest):
@@ -94,8 +94,7 @@ sys.stdin.read()
             notify(sessionUpdate="tool_call", status="pending", **tool),
             permission(91, {"toolCallId": "search"}),
             permission(92, {"name": "run_command", "toolCallId": "shell"}),
-            notify(sessionUpdate="tool_call_update", toolCallId="search", status="completed",
-                   rawOutput={"content": [{"type": "text", "text": "SESSION result-id"}]}),
+            notify(sessionUpdate="tool_call_update", toolCallId="search", status="completed"),
             notify(sessionUpdate="agent_message_chunk", content={"type": "text", "text": "调研完成"}),
             {"id": 3, "result": {"stopReason": "end_turn"}},
         ]
@@ -103,6 +102,9 @@ sys.stdin.read()
             "\n".join(json.dumps(event) for event in events)))
         acp = antigravity_backend.Conversation("test-chat", proc, "test")
         antigravity_backend._write_workspace(self.tmp, "test")
+        with patch.dict(mcp_server.os.environ, {"XHS_MCP_RESULTS": str(self.tmp / "tool-results.jsonl")}):
+            mcp_server._record_tool_result("search_xiaohongshu",
+                                           [{"type": "text", "text": "SESSION result-id"}], False)
         prompt = [{"type": "text", "text": "调研"}, {"type": "image", "mimeType": "image/png", "data": "YQ=="}]
         acp.ask(str(self.tmp), prompt)
         sent = {msg["id"]: msg for msg in map(json.loads, proc.stdin.getvalue().splitlines())}
@@ -110,6 +112,9 @@ sys.stdin.read()
         self.assertEqual(mcp["env"]["XHS_TURN_ID"], "test")
         self.assertTrue(mcp["tools"]["search_xiaohongshu"]["eager"])
         self.assertEqual(sent[2]["params"]["cwd"], str(self.tmp))
+        registered, = sent[2]["params"]["mcpServers"]
+        self.assertEqual(registered["name"], "xhs_test")
+        self.assertEqual({item["name"]: item["value"] for item in registered["env"]}, mcp["env"])
         self.assertEqual(sent[3]["params"]["prompt"], prompt)
         self.assertEqual(sent[91]["result"]["outcome"]["optionId"], "allow")
         self.assertEqual(sent[92]["result"]["outcome"]["optionId"], "reject")

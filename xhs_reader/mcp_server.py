@@ -8,6 +8,7 @@ import base64
 import json
 import os
 import sys
+from pathlib import Path
 
 from . import paths
 from .images import MIME
@@ -25,6 +26,20 @@ def call_tool(name, args):
         content.append({"type": "image", "data": base64.b64encode(p.read_bytes()).decode(),
                         "mimeType": MIME.get(p.suffix.lstrip("."), "image/webp")})
     return content, r["is_error"]
+
+
+def _record_tool_result(name, content, is_error):
+    # agy acknowledges MCP completion over ACP without including its output.
+    # The launcher may provide a private per-turn file for rendering progress.
+    path = os.environ.get("XHS_MCP_RESULTS")
+    if path:
+        record = {"name": name, "text": " ".join(p["text"] for p in content if p["type"] == "text"),
+                  "images": sum(p["type"] == "image" for p in content), "error": bool(is_error)}
+        try:
+            with Path(path).open("ab") as file:
+                file.write((json.dumps(record) + "\n").encode("utf-8"))
+        except OSError:
+            pass
 
 
 def launch_spec(turn_id):
@@ -80,6 +95,7 @@ def serve():
                 _reply(rid, error={"code": -32602, "message": "Invalid tool name or arguments"})
                 continue
             content, is_error = call_tool(name, args)
+            _record_tool_result(name, content, is_error)
             result = {"content": content, "isError": bool(is_error)}
         elif method == "ping":
             result = {}

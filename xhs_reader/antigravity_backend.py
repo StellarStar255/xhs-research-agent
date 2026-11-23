@@ -20,15 +20,23 @@ def _server_name(turn_id):
     return "xhs_" + turn_id[:16]
 
 
+def _mcp_server(root, turn_id):
+    command, args, env = launch_spec(turn_id)
+    env = {**env, "XHS_MCP_RESULTS": str(root / "tool-results.jsonl")}
+    return {"name": _server_name(turn_id), "command": command, "args": args,
+            "env": [{"name": key, "value": value} for key, value in env.items()]}
+
+
 def _write_workspace(root, turn_id):
     config = root / ".agents"
     agents = config / "agents"
     agents.mkdir(parents=True)
-    command, args, env = launch_spec(turn_id)
     # Eager tools carry their schemas directly. Lazy tools require filesystem
     # access to the CLI's schema cache and the generic call_mcp_tool wrapper.
-    mcp = {"mcpServers": {_server_name(turn_id): {
-        "command": command, "args": args, "env": env, "timeoutSeconds": 900,
+    server = _mcp_server(root, turn_id)
+    mcp = {"mcpServers": {server["name"]: {
+        "command": server["command"], "args": server["args"],
+        "env": {entry["name"]: entry["value"] for entry in server["env"]}, "timeoutSeconds": 900,
         "tools": {name: {"eager": True} for name in sorted(TOOL_NAMES)},
     }}}
     (config / "mcp_config.json").write_text(json.dumps(mcp), encoding="utf-8")
@@ -159,6 +167,7 @@ class Conversation:
         self.cid = cid
         self.proc = proc
         self.server = _server_name(turn_id)
+        self.turn_id = turn_id
         self.session = None
         self.sequence = 0
         self.tool_names = {prefix + name: name for name in TOOL_NAMES for prefix in (
@@ -166,6 +175,9 @@ class Conversation:
         self.pending = {}
         self.draft = ""
         self.flushed = 0.0
+        self.results = None
+        self.result_offset = 0
+        self.tool_results = []
 
     def send(self, **payload):
         print(json.dumps({"jsonrpc": "2.0", **payload}), file=self.proc.stdin, flush=True)
@@ -194,7 +206,12 @@ class Conversation:
                              clientInfo={"name": "xhs-research-agent", "version": "1"})
         if hello.get("protocolVersion") != 1:
             raise RuntimeError("Antigravity CLI 的 ACP 协议版本不受支持")
-        session = self.request("session/new", cwd=cwd, mcpServers=[])
+        # agy needs the ACP registration for discovery and the workspace
+        # configuration for eager exposure of these tools to the model.
+        servers = [_mcp_server(Path(cwd), self.turn_id)] if self.cid is not None else []
+        if servers:
+            self.results = Path(cwd) / "tool-results.jsonl"
+        session = self.request("session/new", cwd=cwd, mcpServers=servers)
         self.session = session["sessionId"]
         return session.get("configOptions") or []
 
@@ -246,6 +263,20 @@ class Conversation:
     def tool_name(self, call):
         return self.tool_names.get(call.get("name")) or self.tool_names.get(call.get("title"))
 
+    def read_tool_result(self, name):
+        if self.results and self.results.exists():
+            with self.results.open("rb") as file:
+                file.seek(self.result_offset)
+                for line in file:
+                    if not line.endswith(b"\n"):
+                        break
+                    self.tool_results.append(json.loads(line))
+                    self.result_offset += len(line)
+        for index, result in enumerate(self.tool_results):
+            if result["name"] == name:
+                return self.tool_results.pop(index)
+        return {}
+
     def flush_text(self):
         if self.draft:
             text = self.draft
@@ -286,17 +317,18 @@ class Conversation:
                 part = agent.tool_step(name, args if isinstance(args, dict) else {}, tid)
                 msg["parts"].append(part)
             if status in ("completed", "failed"):
+                result = self.read_tool_result(name)
                 blocks = [item["content"] for item in event.get("content") or []
                           if item.get("type") == "content" and isinstance(item.get("content"), dict)]
                 raw = event.get("rawOutput")
                 if not blocks and isinstance(raw, dict):
                     blocks = raw.get("content") or []
-                text = "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+                text = result.get("text") or "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text")
                 if not text and isinstance(raw, str):
                     text = raw
-                failed = status == "failed" or (isinstance(raw, dict) and raw.get("isError"))
+                failed = status == "failed" or result.get("error") or (isinstance(raw, dict) and raw.get("isError"))
                 if name == "view_note_images":
-                    num = sum(b.get("type") == "image" for b in blocks)
+                    num = result.get("images", sum(b.get("type") == "image" for b in blocks))
                     agent.apply_images_output(part, text, num, failed)
                 else:
                     agent.apply_tool_output(part, text, failed)
