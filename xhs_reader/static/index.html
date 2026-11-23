@@ -1647,7 +1647,7 @@ async function loadSettings(options) {
   conf = await api('/api/settings', options);
   const p = conf.providers.find(p => p.id === conf.api.provider);
   $('#backendLabel').textContent = conf.backend === 'claude' ? 'Claude Code' + (conf.claude_model ? ' · ' + conf.claude_model : '') : conf.backend === 'codex' ? 'Codex' + (conf.codex_model ? ' · ' + conf.codex_model : '')
-    : conf.backend === 'antigravity' ? 'Antigravity CLI'
+    : conf.backend === 'antigravity' ? ['Antigravity CLI', conf.antigravity_model].filter(Boolean).join(' · ')
     : (conf.api.has_key ? (p && p.id !== 'custom' ? p.name.split('（')[0] : '') + ' ' + conf.api.model : '未配置 API');
   return conf;
 }
@@ -1686,7 +1686,14 @@ function syncEffort(name, value) {
 function formValue() {
   return {backend: document.querySelector('input[name=backend]:checked').value, claude_model: cliModelValue('Claude'), codex_model: cliModelValue('Codex'),
           claude_effort: $('#sClaudeEffort')?.value || '', codex_effort: $('#sCodexEffort')?.value || '',
+          antigravity_model: $('#sAgyModel')?.value || '', antigravity_effort: $('#sAgyEffort')?.value || '',
           api: {provider: $('#sProvider').value, base_url: $('#sBase').value, model: $('#sModel').value, api_key: $('#sKey').value}};
+}
+function fillAgySelect(select, options, value) {
+  select.length = 1;
+  for (const item of options) select.add(new Option(item.name, item.value));
+  if (value && !options.some(item => item.value === value)) select.add(new Option(value, value));
+  select.value = value;
 }
 function showProviderNote() {
   const p = conf.providers.find(p => p.id === $('#sProvider').value) || {};
@@ -1780,7 +1787,12 @@ function renderSettings(message, ui, bw, mob) {
       <div>Codex（ChatGPT 账号）<small>${conf.codex_available ? '使用本机已登录的 OpenAI Codex（例如用 ChatGPT 账号登录）' : '未检测到本机 Codex CLI。安装后重新打开设置。'}</small></div></label>
     ${cliModelFields('Codex', conf.codex_model || '', conf.codex_models || [], '默认（由 Codex 选择）')}
     <label class="opt ${conf.antigravity_available ? '' : 'disabled'}"><input type="radio" name="backend" value="antigravity" ${conf.backend === 'antigravity' ? 'checked' : ''} ${conf.antigravity_available ? '' : 'disabled'}>
-      <div>Antigravity CLI（Google 账号）<small>${conf.antigravity_available ? '使用本机 agy 的登录和默认模型' : '未检测到 agy。安装 Antigravity CLI，在终端运行 agy 登录后重新打开设置。'}</small></div></label>
+      <div>Antigravity CLI（Google 账号）<small>${conf.antigravity_available ? '使用本机 agy 的登录' : '未检测到 agy。安装 Antigravity CLI，在终端运行 agy 登录后重新打开设置。'}</small></div></label>
+    <div class="api" id="sAgy" hidden>
+      <label class="field"><span>Antigravity 模型</span><select id="sAgyModel"><option value="">默认（由 agy 选择）</option></select></label>
+      <label class="field"><span>思考强度（可选）</span><select id="sAgyEffort"><option value="">默认（由 agy 选择）</option></select></label>
+      <div class="note" id="sAgyNote" role="status"></div>
+    </div>
     <label class="opt"><input type="radio" name="backend" value="api" ${conf.backend === 'api' ? 'checked' : ''}>
       <div>大模型 API<small>Gemini、DeepSeek、通义千问、Kimi、智谱、OpenAI 等，用你自己的 API Key，按用量付费</small></div></label>
     <div class="api" id="sApi">
@@ -1799,9 +1811,40 @@ function renderSettings(message, ui, bw, mob) {
     <div class="actions"><span class="msg-out" id="sOut"></span>
       <button class="btn" id="sTest">测试连接</button><button class="btn primary" id="sSave">保存</button></div>
   </div>`;
+  const agyModel = $('#sAgyModel'), agyEffort = $('#sAgyEffort'), agyNote = $('#sAgyNote');
+  fillAgySelect(agyModel, [], conf.antigravity_model || '');
+  fillAgySelect(agyEffort, [], conf.antigravity_effort || '');
+  let agyLoaded = false, agyRequest = 0;
+  const refreshAgy = async () => {
+    const request = ++agyRequest;
+    const model = agyModel.value;
+    agyEffort.disabled = true;
+    agyNote.textContent = '正在读取 agy 的可用模型和思考强度…';
+    try {
+      const result = await api('/api/settings/antigravity-options?' + new URLSearchParams({model}),
+                               {method: 'POST', signal: AbortSignal.timeout(20000)});
+      if (request !== agyRequest || !agyModel.isConnected) return;
+      fillAgySelect(agyModel, result.models, model);
+      fillAgySelect(agyEffort, result.efforts, agyEffort.value);
+      agyNote.textContent = '保存后用于新对话。';
+    } catch (e) {
+      if (request === agyRequest && agyModel.isConnected) agyNote.textContent = e.message;
+    } finally {
+      if (request === agyRequest) agyEffort.disabled = false;
+    }
+  };
+  agyModel.onchange = () => {
+    fillAgySelect(agyEffort, [], '');
+    refreshAgy();
+  };
   const sync = () => {
     const b = document.querySelector('input[name=backend]:checked')?.value;
     $('#sApi').hidden = b !== 'api'; $('#sTest').hidden = b !== 'api'; $('#sClaude').hidden = b !== 'claude'; $('#sCodex').hidden = b !== 'codex';
+    $('#sAgy').hidden = b !== 'antigravity';
+    if (b === 'antigravity' && conf.antigravity_available && !agyLoaded) {
+      agyLoaded = true;
+      refreshAgy();
+    }
     document.querySelectorAll('.settings label.opt').forEach(l => { const i = l.querySelector('input[name=backend]'); if (i) l.classList.toggle('on', i.checked); });
   };
   document.querySelectorAll('input[name=backend]').forEach(r => r.onchange = sync);

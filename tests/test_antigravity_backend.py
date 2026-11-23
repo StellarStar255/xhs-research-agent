@@ -13,10 +13,34 @@ class AntigravityTests(IsolatedTest):
     def test_settings_select_backend_for_new_chat(self):
         with patch.object(settings, "find_antigravity", return_value="/tmp/agy"), \
              patch.object(antigravity_backend, "start") as start:
-            server.save_settings(server.SettingsReq(backend="antigravity", api=server.ApiConf()))
+            server.save_settings(server.SettingsReq(backend="antigravity", api=server.ApiConf(),
+                                                    antigravity_model="gemini-flash", antigravity_effort="low"))
             cid = agent.send(None, "开始调研")
             self.assertEqual(agent.load(cid)["backend"], "antigravity")
             self.assertEqual(start.call_args.args[1], "开始调研")
+            self.assertEqual(start.call_args.args[0]["model_config"]["antigravity_model"], "gemini-flash")
+            self.assertEqual(start.call_args.args[0]["model_config"]["antigravity_effort"], "low")
+
+    def test_acp_applies_model_before_choosing_model_specific_effort(self):
+        session = "session-id"
+        model = {"id": "model", "type": "select", "currentValue": "pro",
+                 "options": [{"value": "pro"}, {"value": "flash"}]}
+        effort = {"id": "thought_level", "type": "select", "currentValue": "high",
+                  "options": [{"value": "high"}]}
+        flash = {**model, "currentValue": "flash"}
+        flash_effort = {**effort, "options": [{"value": "high"}, {"value": "low"}]}
+        results = [{"protocolVersion": 1}, {"sessionId": session, "configOptions": [model, effort]},
+                   {"configOptions": [flash, flash_effort]},
+                   {"configOptions": [flash, {**flash_effort, "currentValue": "low"}]},
+                   {"stopReason": "end_turn"}]
+        proc = SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO("\n".join(
+            json.dumps({"id": i, "result": result}) for i, result in enumerate(results, 1))))
+        acp = antigravity_backend.Conversation("test-chat", proc, "test")
+        acp.ask(str(self.tmp), [{"type": "text", "text": "你好"}], "flash", "low")
+        messages = [json.loads(line) for line in proc.stdin.getvalue().splitlines()]
+        self.assertEqual([m["method"] for m in messages[2:]],
+                         ["session/set_config_option", "session/set_config_option", "session/prompt"])
+        self.assertEqual([m["params"]["value"] for m in messages[2:4]], ["flash", "low"])
 
     def test_cli_auth_failure_finishes_turn_and_cleans_workspace(self):
         script = """

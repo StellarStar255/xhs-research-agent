@@ -39,10 +39,43 @@ def _write_workspace(root, turn_id):
         + agent.system_prompt(TOOLS_TEXT), encoding="utf-8")
 
 
-def start(chat, text, images, turn_id):
+def _spawn(root):
     executable = settings.find_antigravity()
     if not executable:
         raise RuntimeError("未检测到 Antigravity CLI（agy），请先安装并在终端登录")
+    env = paths.child_env()
+    env["PATH"] = os.pathsep.join((str(Path(executable).parent), env.get("PATH", "")))
+    return procutil.popen([executable, "acp", "--agent", AGENT, "--sandbox"], cwd=root, env=env,
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, bufsize=1)
+
+
+def choices(model=""):
+    """Read the account's current options without sending a model prompt."""
+    with tempfile.TemporaryDirectory(prefix="xhs-agy-options-") as directory:
+        root = Path(directory)
+        _write_workspace(root, "options")
+        proc = _spawn(root)
+        timer = threading.Timer(12, procutil.kill_tree, args=(proc,))
+        timer.daemon = True
+        timer.start()
+        try:
+            acp = Conversation(None, proc, "options")
+            options = acp.open_session(directory)
+            models = acp.option(options, "model").get("options", [])
+            options = acp.select(options, "model", model)
+            efforts = acp.option(options, "thought_level").get("options", [])
+            return {key: [{"value": item["value"], "name": item["name"]}
+                          for item in items if isinstance(item.get("value"), str) and isinstance(item.get("name"), str)]
+                    for key, items in (("models", models), ("efforts", efforts))}
+        finally:
+            timer.cancel()
+            if proc.poll() is None:
+                procutil.kill_tree(proc)
+            proc.communicate()
+
+
+def start(chat, text, images, turn_id):
     prompt = text or agent.DEFAULT_IMAGE_PROMPT
     if context := agent._transcript(chat):
         prompt = f"此前的对话：\n{context}\n\n当前问题：\n{prompt}"
@@ -53,17 +86,13 @@ def start(chat, text, images, turn_id):
     try:
         root = Path(workspace.name)
         _write_workspace(root, turn_id)
-        env = paths.child_env()
-        env["PATH"] = os.pathsep.join((str(Path(executable).parent), env.get("PATH", "")))
-        proc = procutil.popen([executable, "acp", "--agent", AGENT, "--sandbox"], cwd=root, env=env,
-                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              text=True, bufsize=1)
+        proc = _spawn(root)
     except BaseException:
         workspace.cleanup()
         raise
 
     def pump(cid, proc, run):
-        _pump(cid, proc, run, workspace, content, turn_id)
+        _pump(cid, proc, run, workspace, content, turn_id, chat.get("model_config", {}))
 
     return agent.ClaudeRun(proc, pump, chat["id"])
 
@@ -75,7 +104,7 @@ def _error(text):
     return (text.strip() or "Antigravity CLI 未返回完整结果")[-500:]
 
 
-def _pump(cid, proc, run, workspace, content, turn_id):
+def _pump(cid, proc, run, workspace, content, turn_id, config):
     errors = []
 
     def drain():
@@ -97,7 +126,8 @@ def _pump(cid, proc, run, workspace, content, turn_id):
     error = None
     acp = Conversation(cid, proc, turn_id)
     try:
-        acp.ask(workspace.name, content)
+        acp.ask(workspace.name, content, config.get("antigravity_model", ""),
+                config.get("antigravity_effort", ""))
     except Exception as exc:
         reader.join(timeout=0.2)
         detail = "\n".join([str(exc), *errors])
@@ -159,13 +189,40 @@ class Conversation:
                 return event["result"]
         raise RuntimeError("Antigravity CLI 连接中断，请确认已安装支持 ACP 的版本")
 
-    def ask(self, cwd, content):
+    def open_session(self, cwd):
         hello = self.request("initialize", protocolVersion=1, clientCapabilities={},
                              clientInfo={"name": "xhs-research-agent", "version": "1"})
         if hello.get("protocolVersion") != 1:
             raise RuntimeError("Antigravity CLI 的 ACP 协议版本不受支持")
         session = self.request("session/new", cwd=cwd, mcpServers=[])
         self.session = session["sessionId"]
+        return session.get("configOptions") or []
+
+    @staticmethod
+    def option(options, category):
+        return next((opt for opt in options if opt.get("type") == "select" and
+                     (opt.get("category") == category or opt.get("id") == category)), {})
+
+    def select(self, options, category, value):
+        if not value:
+            return options
+        opt = self.option(options, category)
+        if not any(item.get("value") == value for item in opt.get("options", [])):
+            label = "模型" if category == "model" else "思考强度"
+            raise RuntimeError(f"Antigravity CLI 当前不支持所选{label}：{value}。请检查设置中的可用选项。")
+        if opt.get("currentValue") == value:
+            return options
+        result = self.request("session/set_config_option", sessionId=self.session,
+                              configId=opt["id"], value=value)
+        updated = result.get("configOptions") or []
+        if self.option(updated, category).get("currentValue") != value:
+            raise RuntimeError("Antigravity CLI 未应用所选设置")
+        return updated
+
+    def ask(self, cwd, content, model="", effort=""):
+        options = self.open_session(cwd)
+        options = self.select(options, "model", model)
+        self.select(options, "thought_level", effort)
         result = self.request("session/prompt", sessionId=self.session, prompt=content)
         if result.get("stopReason") != "end_turn":
             raise RuntimeError(f"Antigravity CLI 提前结束：{result.get('stopReason', 'unknown')}")

@@ -199,6 +199,9 @@ def load():
     # Claude Code model: "" = Claude Code's own default, or an alias like "sonnet" / "opus".
     s.setdefault("claude_model", "")
     s.setdefault("codex_model", "")
+    for field in ("antigravity_model", "antigravity_effort"):
+        if not valid_model(s.setdefault(field, "")):
+            s[field] = ""
     for field, choices in (("codex_effort", CODEX_EFFORTS), ("claude_effort", CLAUDE_EFFORTS)):
         if s.setdefault(field, "") not in choices:
             s[field] = ""
@@ -245,6 +248,7 @@ def public(s=None):
             "claude_efforts": claude_efforts(),
             "codex_models": codex_models(), "api": api, "claude_available": claude_available(),
             "codex_available": codex_available(), "antigravity_available": bool(find_antigravity()),
+            "antigravity_model": s["antigravity_model"], "antigravity_effort": s["antigravity_effort"],
             "providers": PROVIDERS}
 
 

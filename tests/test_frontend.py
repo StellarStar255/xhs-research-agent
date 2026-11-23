@@ -270,12 +270,20 @@ class FrontendTests(IsolatedTest):
                     page.evaluate('openSettings()')
                     expect(agy_radio).to_be_disabled()
                 with patch.object(settings, 'find_antigravity', return_value='/test/agy'):
+                    page.route('**/api/settings/antigravity-options?*', lambda route: route.fulfill(json={
+                        'models': [{'value': 'test-flash', 'name': 'Test Flash'}],
+                        'efforts': [{'value': 'low', 'name': 'Low'}] if 'test-flash' in route.request.url else [],
+                    }))
                     page.evaluate('openSettings()')
                     agy_radio.check()
+                    page.locator('#sAgyModel').select_option('test-flash')
+                    page.locator('#sAgyEffort').select_option('low')
                     page.locator('#sSave').click()
                     page.wait_for_function("!document.querySelector('#modal').classList.contains('show')")
-                    expect(page.locator('#backendLabel')).to_have_text('Antigravity CLI')
+                    expect(page.locator('#backendLabel')).to_have_text('Antigravity CLI · test-flash')
                 self.assertEqual(settings.load()['backend'], 'antigravity')
+                self.assertEqual(settings.load()['antigravity_model'], 'test-flash')
+                self.assertEqual(settings.load()['antigravity_effort'], 'low')
                 self.assertFalse(errors, errors)
             finally:
                 browser.close()

@@ -36,7 +36,7 @@
 
 使用 Gemini 时，在「设置 → 大模型 API → 服务商」选择「Google Gemini」，填入 [Google AI Studio](https://aistudio.google.com/apikey) 的 Gemini API Key。默认使用支持图片和调研工具的 `gemini-3.8-flash`，也可以填写账号可用的其他模型 ID。测试连接并保存后，新建对话即可使用。
 
-也可以在「设置」选择「Antigravity CLI（Google 账号）」。先安装 [支持 ACP 的 Antigravity CLI](https://antigravity.google/docs/cli/acp/)，在终端运行 `agy` 完成 Google 登录，再回到应用保存设置并新建对话。应用使用 CLI 的默认模型。自定义安装位置可通过 `XHS_AGY_PATH` 指定。
+也可以在「设置」选择「Antigravity CLI（Google 账号）」。先安装 [支持 ACP 的 Antigravity CLI](https://antigravity.google/docs/cli/acp/)，在终端运行 `agy` 完成 Google 登录，再回到应用保存设置并新建对话。模型和思考强度由本机 CLI 提供，均可留为默认。自定义安装位置可通过 `XHS_AGY_PATH` 指定。
 
 Claude Code 和 Codex 也可以选择具体模型：Claude 支持 Sonnet、Opus、Haiku 别名或手动填写模型 ID；Codex 显示本机 CLI 缓存中的候选模型，也支持手动填写。实际可用模型由你的账户和本机 CLI 决定。
 

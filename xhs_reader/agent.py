@@ -446,6 +446,8 @@ def send(cid, text, images=(), names=None):
             conf = settings.load()
             chat["model_config"] = {"claude_model": MODEL or conf["claude_model"],
                                     "codex_model": conf["codex_model"],
+                                    "antigravity_model": conf["antigravity_model"],
+                                    "antigravity_effort": conf["antigravity_effort"],
                                     "codex_effort": conf["codex_effort"], "claude_effort": conf["claude_effort"],
                                     "api": {k: v for k, v in conf["api"].items() if k != "api_key"}}
         # Existing Codex chats were created before model selection existed.
@@ -515,7 +517,9 @@ def _keep_awake(on):
 
 def _model_label(chat):
     if chat.get("backend") == "antigravity":
-        return "Antigravity CLI"
+        config = chat.get("model_config", {})
+        return " · ".join(filter(None, ("Antigravity CLI", config.get("antigravity_model"),
+                                        config.get("antigravity_effort"))))
     if chat.get("backend") == "codex":
         model = chat.get("model_config", {}).get("codex_model", "")
         effort = chat.get("model_config", {}).get("codex_effort", "")

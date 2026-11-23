@@ -141,6 +141,8 @@ class SettingsReq(BaseModel):
     codex_model: str = ""
     codex_effort: str = ""
     claude_effort: str = ""
+    antigravity_model: str = ""
+    antigravity_effort: str = ""
 
 
 def _merged(req: SettingsReq, s=None):
@@ -148,10 +150,11 @@ def _merged(req: SettingsReq, s=None):
     if req.backend not in ("claude", "codex", "antigravity", "api"):
         raise HTTPException(400, "未知的后端")
     s["backend"] = req.backend
-    for field, label in (("claude_model", "Claude"), ("codex_model", "Codex")):
+    for field, label in (("claude_model", "Claude 模型名"), ("codex_model", "Codex 模型名"),
+                         ("antigravity_model", "Antigravity 模型名"), ("antigravity_effort", "Antigravity 思考强度")):
         value = getattr(req, field).strip()
         if not settings.valid_model(value):
-            raise HTTPException(400, f"{label} 模型名格式不正确")
+            raise HTTPException(400, f"{label}格式不正确")
         s[field] = value
     for field, allowed in (("codex_effort", settings.CODEX_EFFORTS), ("claude_effort", settings.CLAUDE_EFFORTS)):
         value = getattr(req, field)
@@ -643,6 +646,17 @@ def save_settings(req: SettingsReq):
             raise HTTPException(400, "使用大模型 API 需要填写接口地址、模型名和 API Key")
     s = settings.update(merge)
     return settings.public(s)
+
+
+@app.post("/api/settings/antigravity-options")
+def antigravity_options(model: str = ""):
+    from . import antigravity_backend
+    if not settings.valid_model(model):
+        raise HTTPException(400, "Antigravity 模型名格式不正确")
+    try:
+        return antigravity_backend.choices(model)
+    except Exception as exc:
+        raise HTTPException(502, antigravity_backend._error(str(exc))) from exc
 
 
 @app.post("/api/settings/test")
