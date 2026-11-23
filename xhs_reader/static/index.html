@@ -1914,8 +1914,9 @@ function renderUpdate() {
   if (upd.available) html += `<button class="btn primary" id="uGo" ${busy ? 'disabled' : ''}>立即更新</button>`;
   else html += `<button class="btn" id="uCheck" ${busy ? 'disabled' : ''}>检查更新</button>`;
   html += `</div>`;
-  if (busy) html += `<div class="note" style="margin-top:8px">${UPD_TEXT[upd.phase]}${upd.phase === 'downloading' ? ` ${upd.progress}%` : ''}</div>
-    ${upd.phase === 'downloading' ? `<div class="bar"><i style="width:${upd.progress}%"></i></div>` : ''}`;
+  const downloading = upd.phase === 'downloading', showProgress = downloading && Number.isFinite(upd.progress);
+  if (busy) html += `<div class="note" style="margin-top:8px">${downloading && upd.download_retry ? '正在重试下载' : UPD_TEXT[upd.phase]}${showProgress ? ` ${upd.progress}%` : ''}</div>
+    ${showProgress ? `<div class="bar"><i style="width:${upd.progress}%"></i></div>` : ''}`;
   if (upd.phase === 'manual') html += `<p class="note">已打开新版本的安装包：请把应用拖进「应用程序」替换旧版本，然后重新打开。</p>`;
   if (upd.error) html += `<p class="err-text" style="font-size:13px">${esc(upd.error)}</p>`;
   if (upd.available && upd.notes_html) html += `<div class="notes md">${upd.notes_html}</div>`;

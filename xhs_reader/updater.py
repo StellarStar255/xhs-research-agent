@@ -14,19 +14,23 @@ If an in-place install isn't possible (running from the DMG, App Translocation, 
 access), we fall back to opening the downloaded installer for a manual install.
 """
 import hashlib
+import http.client
 import json
 import os
 import re
 import shlex
+import ssl
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import urllib.request
+from urllib.error import HTTPError, URLError
 from pathlib import Path
 
 from . import __version__, paths, procutil
+from .persistence import file_lock
 
 REPO = "StellarStar255/xhs-research-agent"
 TEAM_ID = "3QCL9WNFBB"
@@ -35,6 +39,7 @@ APP_NAME = "XHS Research Agent"
 MAC, WINDOWS = sys.platform == "darwin", sys.platform == "win32"
 CHECK_EVERY = 6 * 3600
 BUSY_PHASES = ("checking", "downloading", "verifying", "installing")
+DOWNLOAD_ATTEMPTS = 4
 
 _lock = threading.Lock()
 _state = {"current": __version__, "latest": None, "available": False, "notes": "", "url": None,
@@ -64,9 +69,9 @@ def _vtuple(v):
     return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
 
 
-def _get(url, timeout=20):
+def _get(url, timeout=20, headers=None):
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
-                                               "User-Agent": f"{APP_NAME}/{__version__}"})
+                                               "User-Agent": f"{APP_NAME}/{__version__}", **(headers or {})})
     return urllib.request.urlopen(req, timeout=timeout)
 
 
@@ -97,10 +102,12 @@ def check():
             rel = json.load(r)
         latest = rel["tag_name"].removeprefix("v")
         work = _update_directory(latest)
-        assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
+        assets = {a["name"]: a for a in rel.get("assets", [])}
         pattern = _asset_pattern()
         name = next((n for n in assets if re.fullmatch(r"[A-Za-z0-9._-]+", n) and pattern.search(n)), None)
-        installer = assets.get(name)
+        asset = assets.get(name, {})
+        installer = asset.get("browser_download_url")
+        size = asset.get("size")
         available = (_vtuple(latest) > _vtuple(__version__) and bool(installer)
                      and not rel.get("draft") and not rel.get("prerelease"))
         error = None
@@ -112,8 +119,8 @@ def check():
                 pass
         _set(latest=latest, notes=rel.get("body") or "", url=rel.get("html_url"),
              available=available, error=error,
-             installer=installer, sums=assets.get("SHA256SUMS.txt"),
-             installer_name=name,
+             installer=installer, sums=assets.get("SHA256SUMS.txt", {}).get("browser_download_url"),
+             installer_name=name, installer_size=size if type(size) is int and size > 0 else 0,
              checked_at=time.time(), phase="idle")
     except Exception as e:
         _set(phase="idle", error=f"检查更新失败：{e}", checked_at=time.time())
@@ -136,18 +143,85 @@ def check_periodically():
 
 # ---------- download & verify ----------
 
-def _download(url, dest):
-    with _get(url, timeout=60) as r:
-        total = int(r.headers.get("Content-Length") or 0)
-        done = 0
-        with open(dest, "wb") as f:
-            while chunk := r.read(1 << 16):
-                f.write(chunk)
+class _IncompleteDownload(Exception):
+    pass
+
+
+class _InvalidRange(_IncompleteDownload):
+    pass
+
+
+def _download_segment(url, dest, offset, expected_size):
+    headers = {"Accept": "application/octet-stream", "Accept-Encoding": "identity"}
+    if offset:
+        headers["Range"] = f"bytes={offset}-"
+    with _get(url, timeout=45, headers=headers) as response:
+        if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+            raise _IncompleteDownload("服务器返回了意外的内容编码")
+        length = response.headers.get("Content-Length")
+        if length is not None and not re.fullmatch(r"[0-9]+", length):
+            raise _IncompleteDownload("响应长度无效")
+        length = int(length) if length is not None else None
+        if response.status == 206:
+            match = re.fullmatch(r"bytes ([0-9]+)-([0-9]+)/([0-9]+)",
+                                 response.headers.get("Content-Range", ""))
+            if not match:
+                raise _InvalidRange("续传范围无效")
+            start, end, total = map(int, match.groups())
+            if (start != offset or not start <= end < total
+                    or (expected_size and total != expected_size)
+                    or (length is not None and length != end - start + 1)):
+                raise _InvalidRange("续传范围与安装包不一致")
+            stop = end + 1
+        elif response.status == 200:
+            # A server may ignore Range. Its response starts at zero.
+            offset = 0
+            if expected_size and length is not None and length != expected_size:
+                raise _IncompleteDownload("响应长度与发布的安装包不一致")
+            total = stop = expected_size or length
+        else:
+            raise _IncompleteDownload(f"意外的下载响应 HTTP {response.status}")
+        done = offset
+        _set(progress=min(99, done * 100 // total) if total else None)
+        with dest.open("ab" if offset else "wb") as file:
+            while chunk := response.read1(1 << 16):
                 done += len(chunk)
+                if stop is not None and done > stop:
+                    raise _InvalidRange("服务器发送了超出声明范围的数据")
+                file.write(chunk)
                 if total:
-                    _set(progress=min(100, round(done * 100 / total)))
-        if total and done != total:
-            raise RuntimeError("安装包下载不完整，请稍后重试")
+                    _set(progress=min(99, done * 100 // total))
+        if done == 0 or (total is not None and done != total):
+            raise _IncompleteDownload("连接在下载完成前结束")
+
+
+def _download(url, dest, expected_size=0, keep_partial=True):
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+        if attempt:
+            _set(download_retry=attempt)
+            time.sleep(min(2 ** (attempt - 1), 4))
+        offset = dest.stat().st_size if dest.exists() else 0
+        if expected_size and offset == expected_size:
+            return
+        if expected_size and offset > expected_size:
+            dest.unlink()
+            offset = 0
+        try:
+            _download_segment(url, dest, offset, expected_size)
+            return
+        except HTTPError as exc:
+            exc.close()
+            if exc.code == 416 and offset:
+                dest.unlink(missing_ok=True)
+            elif exc.code not in (408, 429, 500, 502, 503, 504):
+                raise RuntimeError(f"下载安装包失败（HTTP {exc.code}）") from exc
+        except _InvalidRange:
+            dest.unlink(missing_ok=True)
+        except (_IncompleteDownload, URLError, TimeoutError, ConnectionError, ssl.SSLError,
+                http.client.HTTPException):
+            pass
+    saved = "已保留下载进度。" if keep_partial and dest.exists() and dest.stat().st_size else ""
+    raise RuntimeError(f"安装包下载不完整。{saved}请检查网络后再次点击「立即更新」。")
 
 
 def _sha256(path):
@@ -328,15 +402,34 @@ def _prepare_installer(st, work):
         raise RuntimeError("这个版本没有提供有效的校验文件，请到 Release 页面手动下载")
     work.mkdir(parents=True, exist_ok=True)
     dest = work / name
-    # Expose the executable name only after the complete download passes verification.
-    with tempfile.TemporaryDirectory(prefix="download-", dir=work) as staging:
-        partial = Path(staging) / "installer.part"
-        _download(st["installer"], partial)
-        _set(phase="verifying")
-        if expected and _sha256(partial) != expected:
-            raise RuntimeError("下载的文件校验失败（SHA256 不一致），已删除，请稍后重试")
-        partial.replace(dest)
-    return dest
+    size = st.get("installer_size", 0)
+    lock = work / "download.lock"
+    if paths.is_redirected(lock):
+        raise RuntimeError("更新锁文件指向其他位置，无法下载")
+    with file_lock(lock, timeout=0):
+        if not expected:
+            # Older macOS releases without a checksum still get the app-signature gate.
+            with tempfile.TemporaryDirectory(prefix="download-", dir=work) as staging:
+                partial = Path(staging) / "installer.part"
+                _download(st["installer"], partial, size, keep_partial=False)
+                _set(phase="verifying", progress=100)
+                partial.replace(dest)
+            return dest
+        if dest.is_file() and not paths.is_redirected(dest) and _sha256(dest) == expected:
+            return dest
+        # The release digest scopes the partial across clicks and process restarts.
+        partial = work / f"download-{expected}.part"
+        if paths.is_redirected(partial):
+            raise RuntimeError("安装包临时文件指向其他位置，无法下载")
+        for attempt in range(2):
+            _set(phase="downloading", download_retry=attempt, progress=None)
+            _download(st["installer"], partial, size)
+            _set(phase="verifying", progress=100, download_retry=0)
+            if _sha256(partial) == expected:
+                partial.replace(dest)
+                return dest
+            partial.unlink()
+        raise RuntimeError("下载的安装包 SHA-256 校验失败。请重试，或从发布页下载安装包。")
 
 
 def start(on_ready_to_quit):
@@ -350,7 +443,7 @@ def start(on_ready_to_quit):
         if not _state["available"]:
             raise RuntimeError("没有可用的新版本")
         st = _status_locked()
-        _state.update(phase="downloading", progress=0, error=None)
+        _state.update(phase="downloading", progress=None, download_retry=0, error=None)
 
     def run():
         try:
