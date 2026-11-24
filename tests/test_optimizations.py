@@ -404,6 +404,28 @@ class LifecycleTests(IsolatedTest):
             self.assertEqual(chat['messages'][-1]['status'], 'done')
             self.assertFalse(chat['queued'])
 
+    def test_queue_keeps_distinct_source_selections(self):
+        calls = []
+        entered = threading.Event()
+
+        def worker(run):
+            user = agent.load(run.cid)['messages'][-2]
+            calls.append((user['text'], user.get('source')))
+            if user['text'] == 'first':
+                entered.set()
+                run.cancelled.wait(3)
+
+        with patch.object(llm, 'run_turn', worker), patch.object(agent, '_send_queued_later', _REAL_SEND_QUEUED):
+            cid = agent.send(None, 'first')
+            self.assertTrue(entered.wait(2))
+            agent.submit(cid, 'second', source='twitter')
+            agent.submit(cid, 'third', source='both')
+            agent.stop(cid)
+            deadline = time.monotonic() + 4
+            while time.monotonic() < deadline and (len(calls) < 3 or agent.is_running(cid)):
+                time.sleep(.01)
+            self.assertEqual(calls, [('first', 'auto'), ('second', 'twitter'), ('third', 'both')])
+
     def test_retry_thread_start_failure_cleans_registered_run(self):
         chat = self.chat(claude_session='old-session')
         chat['messages'][-1].update(status='error', error_kind='error_during_execution')

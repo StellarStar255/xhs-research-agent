@@ -61,6 +61,28 @@ class TwitterTests(IsolatedTest):
             "[笔记](https://www.xiaohongshu.com/explore/123) [帖子](https://x.com/user/status/123) "
             "[重复](https://twitter.com/user/status/123)"])), 2)
 
+    def test_selected_source_blocks_xiaohongshu_tools_in_x_turn(self):
+        from xhs_reader.mcp_server import launch_spec
+
+        runner = ToolRunner(source="twitter")
+        with patch.object(runner, "_cli", return_value=(twitter.LIMITED, True)) as cli:
+            self.assertTrue(runner.call("search_xiaohongshu", {"keyword": "问题"})["is_error"])
+            cli.assert_not_called()
+            result = runner.call("search_twitter", {"keyword": "问题"})
+            step = agent.tool_step("search_twitter", {"keyword": "问题"}, "1")
+            agent.apply_tool_output(step, result["text"], result["is_error"])
+            self.assertEqual(step["status"], "limited")
+            runner.call("search_twitter", {"keyword": "重试"})
+            cli.assert_called_once()
+        self.assertEqual(launch_spec("turn", "twitter")[2]["XHS_RESEARCH_SOURCE"], "twitter")
+        self.assertNotIn("XHS_RESEARCH_SOURCE", launch_spec("turn")[2])
+
+    def test_post_metadata_reaches_progress_step(self):
+        step = agent.tool_step("search_twitter", {"keyword": "问题"}, "1")
+        row = {"url": "https://twitter.com/user/status/123", "author": "作者", "date": "今天", "text": "<内容>"}
+        agent.apply_tool_output(step, twitter.digest([row]))
+        self.assertEqual(step["posts"], [{**row, "url": "https://x.com/user/status/123"}])
+
     def test_full_search_preserves_the_tool_output_header(self):
         articles = Mock()
         articles.evaluate_all.return_value = [
@@ -92,6 +114,11 @@ class TwitterTests(IsolatedTest):
                 page = browser.new_page()
                 def fixture(route):
                     url = route.request.url
+                    if "/SearchTimeline" in url:
+                        return route.fulfill(status=429, body="Too many requests")
+                    if "background-limit" in url:
+                        return route.fulfill(content_type="text/html", body=
+                                             "<p>Loading</p><script>fetch('/i/api/graphql/test/SearchTimeline')</script>")
                     if "limited" in url:
                         return route.fulfill(status=429, body="Too many requests")
                     if "/status/123" in url:
@@ -113,7 +140,11 @@ class TwitterTests(IsolatedTest):
                     self.assertEqual([row["text"] for row in result], ["目标正文"])
                     with self.assertRaisesRegex(twitter.BrowseError, "X_LOGIN_REQUIRED"):
                         twitter.search("expired")
+                    with patch.object(server, "_twitter_login", {"state": "done", "message": "已登录 X"}):
+                        self.assertEqual(server.twitter_login_status()["state"], "expired")
                     with self.assertRaisesRegex(twitter.BrowseError, "X_LIMITED"):
                         twitter.search("limited")
+                    with self.assertRaisesRegex(twitter.BrowseError, "X_LIMITED"):
+                        twitter.search("background-limit")
             finally:
                 browser.close()

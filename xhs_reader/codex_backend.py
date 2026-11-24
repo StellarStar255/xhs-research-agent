@@ -52,9 +52,9 @@ def _toml(value):
 CodexRun = agent.ClaudeRun
 
 
-def _mcp_config(turn_id):
+def _mcp_config(turn_id, source="auto"):
     from .mcp_server import launch_spec
-    command, args, env = launch_spec(turn_id)
+    command, args, env = launch_spec(turn_id, source)
     env_toml = "{" + ", ".join(f"{k}={_toml(v)}" for k, v in env.items()) + "}"
     return ["-c", f"mcp_servers.xhs.command={_toml(command)}",
             "-c", f"mcp_servers.xhs.args={_toml(args)}",
@@ -83,7 +83,7 @@ def start(chat, text, image_names, turn_id=""):
         cmd += ["-c", f"model_reasoning_effort={_toml(effort)}"]
     for feature in _features_to_disable(codex):
         cmd += ["--disable", feature]
-    cmd += _mcp_config(turn_id)
+    cmd += _mcp_config(turn_id, agent.turn_source(chat))
     for name in image_names or []:
         cmd += ["-i", str(agent.image_dir(chat["id"]) / name)]
     prompt = text or agent.DEFAULT_IMAGE_PROMPT
@@ -150,6 +150,9 @@ def _handle(chat, msg, ev):
                         agent.apply_images_output(step, text, n, is_error)
                     else:
                         step["status"] = "error" if is_error else "done"
+                elif step["type"] == "twitter":
+                    text, _ = _tool_text(item)
+                    agent.apply_tool_output(step, text or str((item.get("error") or {}).get("message", "")), True)
                 else:
                     step["status"], step["error"] = "error", str((item.get("error") or {}).get("message", ""))
     elif t == "turn.completed":

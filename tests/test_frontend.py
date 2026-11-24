@@ -121,6 +121,18 @@ class FrontendTests(IsolatedTest):
                         page.bring_to_front()
                         expect(page.locator('#loginText')).to_have_text('已登录：测试', timeout=10000)
                         expect(page.locator('.login-card')).to_have_count(0)
+                    expect(gui.locator('#researchSource')).to_have_value('auto')
+                    gui.evaluate("""() => renderThread({id:'test', messages:[
+                        {role:'user', text:'研究这个问题', source:'both'},
+                        {role:'assistant', parts:[{type:'twitter', status:'done', tool_id:'x-test', count:1, posts:[
+                            {author:'测试作者', date:'2026-11-24', text:'<em>帖子正文</em>', url:'https://x.com/user/status/123'}
+                        ]}]}
+                    ]}, false)""")
+                    expect(gui.locator('.msg.user .qnote')).to_have_text('调研来源 · 小红书 + X')
+                    gui.locator('[data-x-posts="x-test"]').click()
+                    expect(gui.locator('#sheet')).to_contain_text('<em>帖子正文</em>')
+                    expect(gui.locator('#sheet em')).to_have_count(0)
+                    expect(gui.locator('#sheet a')).to_have_attribute('href', 'https://x.com/user/status/123')
                 finally:
                     browser.close()
         finally:

@@ -1,10 +1,12 @@
 """Read public X posts through a separate, locally signed-in Chrome profile."""
+import json
 import re
+import time
 from contextlib import contextmanager
 from urllib.parse import quote, urlsplit
 
 from . import paths, scraper
-from .persistence import file_lock
+from .persistence import atomic_json, file_lock, read_json
 
 HOME = "https://x.com"
 HOSTS = {"x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"}
@@ -14,10 +16,25 @@ LOGIN_FORM = ('input[autocomplete~="username"]', 'input[type="password"]')
 POSTS = 'article[data-testid="tweet"]'
 EMPTY = '[data-testid="emptyState"]'
 PAGE_TIMEOUT = 20000
+LOGIN_REQUIRED = "X_LOGIN_REQUIRED: 请点「登录 X」，在 Chrome 登录后再问一次。"
+LIMITED = "X_LIMITED: X 暂时限制访问，请稍后再试。"
 
 
 class BrowseError(RuntimeError):
     pass
+
+
+def login_state():
+    try:
+        state = read_json(paths.DATA_DIR / "twitter-login.json")
+    except (OSError, ValueError):
+        return None
+    return state if state in ("done", "expired") else None
+
+
+def _save_login_state(state):
+    if login_state() != state:
+        atomic_json(paths.DATA_DIR / "twitter-login.json", state)
 
 
 def post_url(value):
@@ -62,7 +79,7 @@ def _open(page, url):
     finally:
         page.remove_listener("response", navigation_response)
     if status == 429:
-        raise BrowseError("X_LIMITED: X 暂时限制访问，请稍后再试。")
+        raise BrowseError(LIMITED)
     if status is not None and status >= 400:
         raise BrowseError(f"X 网页无法打开（HTTP {status}）。")
 
@@ -75,6 +92,7 @@ def login(timeout_s=300):
             account = page.locator(ACCOUNT + ":visible").first
             try:
                 account.wait_for(timeout=3000)
+                _save_login_state("done")
                 return
             except scraper.PlaywrightTimeout:
                 pass
@@ -82,6 +100,7 @@ def login(timeout_s=300):
                 _open(page, HOME + "/i/flow/login")
             try:
                 account.wait_for(timeout=timeout_s * 1000)
+                _save_login_state("done")
             except scraper.PlaywrightTimeout as exc:
                 raise BrowseError("X 登录超时，请再试一次。") from exc
         except scraper.PlaywrightError as exc:
@@ -97,17 +116,41 @@ def _login_required(page):
             or any(page.locator(selector + ":visible").first.is_visible() for selector in LOGIN_FORM))
 
 
-def _ready(page, target):
-    try:
-        visible_states = page.locator(", ".join(f"{state}:visible" for state in (EMPTY, *LOGIN_FORM)))
-        target.and_(page.locator(":visible")).or_(visible_states).first.wait_for(
-            state="visible", timeout=PAGE_TIMEOUT)
-    except scraper.PlaywrightTimeout as exc:
+def _ready(page, target, limited):
+    visible_states = page.locator(", ".join(f"{state}:visible" for state in (EMPTY, *LOGIN_FORM)))
+    ready = target.and_(page.locator(":visible")).or_(visible_states).first
+    deadline = time.monotonic() + PAGE_TIMEOUT / 1000
+    while True:
+        if limited():
+            raise BrowseError(LIMITED)
         if _login_required(page):
-            raise BrowseError("X_LOGIN_REQUIRED: 请点「登录 X」，在 Chrome 登录后再问一次。") from exc
-        raise BrowseError("X 网页未能加载帖子，请在 Chrome 中确认页面可以打开。") from exc
-    if _login_required(page):
-        raise BrowseError("X_LOGIN_REQUIRED: 请点「登录 X」，在 Chrome 登录后再问一次。")
+            _save_login_state("expired")
+            raise BrowseError(LOGIN_REQUIRED)
+        if ready.is_visible():
+            return
+        if time.monotonic() >= deadline:
+            raise BrowseError("X 网页未能加载帖子，请在 Chrome 中确认页面可以打开。")
+        page.wait_for_timeout(200)
+
+
+@contextmanager
+def _post_page(operation):
+    with browser() as page:
+        limited = False
+
+        def on_response(response):
+            nonlocal limited
+            if response.status == 429:
+                url = urlsplit(response.url)
+                if (url.hostname in HOSTS | {"api.x.com", "api.twitter.com"}
+                        and "/graphql/" in url.path and url.path.endswith("/" + operation)):
+                    limited = True
+
+        page.on("response", on_response)
+        try:
+            yield page, lambda: limited
+        finally:
+            page.remove_listener("response", on_response)
 
 
 def _cards(articles, limit):
@@ -144,10 +187,10 @@ def _cards(articles, limit):
 
 
 def search(keyword):
-    with browser() as page:
+    with _post_page("SearchTimeline") as (page, limited):
         _open(page, HOME + "/search?q=" + quote(keyword, safe="") + "&src=typed_query")
         articles = page.locator(POSTS)
-        _ready(page, articles)
+        _ready(page, articles, limited)
         results = _cards(articles, 12)
         if not results and not page.locator(EMPTY).first.is_visible():
             raise BrowseError("X 网页没有返回可识别的帖子，请稍后再试。")
@@ -156,7 +199,7 @@ def search(keyword):
 
 def read(value):
     url, post_id = post_url(value)
-    with browser() as page:
+    with _post_page("TweetDetail") as (page, limited):
         _open(page, url)
         # A thread can include parent posts, quotes, and replies. Match the
         # timestamp's own status link before returning the requested post.
@@ -164,7 +207,7 @@ def read(value):
             f"xpath=(.//time)[1]/ancestor::a[1][contains(concat(@href, '?'), '/status/{post_id}?')"
             f" or contains(concat(@href, '?'), '/status/{post_id}/?')]")
         articles = page.locator(POSTS).filter(has=timestamp)
-        _ready(page, articles)
+        _ready(page, articles, limited)
         results = _cards(articles, 12)
         for row in results:
             if post_url(row["url"])[1] == post_id:
@@ -173,8 +216,9 @@ def read(value):
 
 
 def digest(rows):
-    lines = [f"X 帖子数: {len(rows)}"]
-    for row in rows:
-        lines.extend(("", row["url"], f'{row["author"]} {row["date"]}'.strip(),
-                      row["text"] or "（页面没有可读取的正文）"))
-    return "\n".join(lines)
+    header = f"X 帖子数: {len(rows)}\n"
+    result = json.dumps(rows, ensure_ascii=False)
+    if len(result) > 59000:
+        result = json.dumps([{**row, "text": row["text"][:600], "author": row["author"][:150]}
+                             for row in rows], ensure_ascii=False)
+    return header + result

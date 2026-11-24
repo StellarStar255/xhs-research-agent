@@ -218,6 +218,8 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
 /* composer */
 .composer { padding: 10px 24px 20px; }
+.research-source { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+.research-source select { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; }
 .box { max-width: 780px; margin: 0 auto; background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
        display: flex; align-items: flex-end; gap: 8px; padding: 8px 8px 8px 16px; box-shadow: 0 2px 12px rgba(0,0,0,.04); }
 .box:focus-within { border-color: var(--accent); }
@@ -355,6 +357,9 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   <div id="taskProgress" class="task-progress" hidden><strong id="taskStage" role="status"></strong><span id="taskElapsed"></span><button id="taskStop" class="gear">停止</button></div>
   <div id="scroll"><div class="thread" id="thread"></div></div>
   <div class="composer">
+    <label class="research-source">调研来源
+      <select id="researchSource"><option value="auto">默认（小红书）</option><option value="twitter">X</option><option value="both">小红书 + X</option></select>
+    </label>
     <div class="box">
       <div class="thumbs" id="thumbs"></div>
       <button class="attach" id="attach" title="添加图片">＋</button>
@@ -434,14 +439,15 @@ async function readDraft(key) {
   if (local && (!value || local.at > value.at)) value = {...local, images: value && local.imageSignature === imageSignature(value.images || []) ? value.images : []};
   return value || {text: '', images: [], at: 0};
 }
-function composerSnapshot() { return {text: $('#input').value, images: pending.map(({media_type, data}) => ({media_type, data})), at: Date.now()}; }
+function composerSnapshot() { return {text: $('#input').value, source: $('#researchSource').value,
+  images: pending.map(({media_type, data}) => ({media_type, data})), at: Date.now()}; }
 function writeDraft(key, value, defer = false) {
   clearTimeout(draftTimers.get(key)); draftTimers.delete(key);
   value = {...value, at: Math.max(value.at || Date.now(), (draftMemory.get(key)?.at || 0) + 1, (draftLocal(key)?.at || 0) + 1)};
   draftMemory.delete(key); draftMemory.set(key, value);
   while (draftMemory.size > 8) draftMemory.delete(draftMemory.keys().next().value);
   let textSaved = false;
-  try { localStorage.setItem('xhs-draft:' + key, JSON.stringify({text: value.text, at: value.at, imageSignature: imageSignature(value.images)})); textSaved = true; } catch {}
+  try { localStorage.setItem('xhs-draft:' + key, JSON.stringify({text: value.text, source: value.source, at: value.at, imageSignature: imageSignature(value.images)})); textSaved = true; } catch {}
   if (defer) {
     // Avoid repeatedly cloning multi-megabyte images for every keystroke.
     draftTimers.set(key, setTimeout(() => writeDraft(key, value), 250));
@@ -469,10 +475,14 @@ function activateDraft(id) {
   const ticket = ++draftNavigation, edits = ++draftEdits;
   draftLoadingTicket = ticket; draftLoadingEdits = edits;
   $('#input').value = draftMemory.get(key)?.text || draftLocal(key)?.text || ''; pending = [];
+  $('#researchSource').value = draftMemory.get(key)?.source || draftLocal(key)?.source || 'auto';
   renderThumbs(); autosize();
   draftLoadPromise = readDraft(key).then(value => {
     if (ticket !== draftNavigation) return;
-    if (edits === draftEdits) $('#input').value = typeof value.text === 'string' ? value.text : '';
+    if (edits === draftEdits) {
+      $('#input').value = typeof value.text === 'string' ? value.text : '';
+      $('#researchSource').value = value.source || 'auto';
+    }
     const restored = (Array.isArray(value.images) ? value.images : []).filter(p => p && /^image\/(png|jpeg|webp|gif)$/.test(p.media_type) && typeof p.data === 'string' && /^[A-Za-z0-9+/=]*$/.test(p.data))
       .map(p => ({...p, url: `data:${p.media_type};base64,${p.data}`}));
     pending = edits === draftEdits ? restored : [...restored, ...pending].filter((p, i, all) => all.findIndex(q => q.data === p.data && q.media_type === p.media_type) === i);
@@ -1112,7 +1122,10 @@ function renderLimits(l) {
   el.title = '';
   el.querySelector('[data-limits-why]').onclick = e => { e.preventDefault(); showLimitsWhy(l); };
 }
-setInterval(() => { if (!document.hidden && !loginStarting) loadStatus(); }, 5000);
+setInterval(() => {
+  if (!document.hidden && !loginStarting) loadStatus();
+  if (!document.hidden) updateTwitterLogin();
+}, 5000);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { loadStatus(); updateTwitterLogin(); loadSettings().catch(() => {}); }
 });
@@ -1142,6 +1155,15 @@ function showWebResults(step) {
     <ol class="weblinks">${step.links.map(l => `<li><a href="${safeHref(l.url)}" target="_blank" rel="noopener">${esc(l.title || l.url)}</a>
       <div class="u">${esc(l.url)}</div></li>`).join('')}</ol>
     <p class="note">这些是搜索返回的网页，助手不一定每个都用了。</p>`;
+  $('#modal').classList.add('show');
+}
+
+function showTwitterResults(step) {
+  $('#sheet').innerHTML = `${closeBtn}<h2>X 帖子</h2>
+    <ol class="weblinks">${step.posts.map(post => `<li>
+      <a href="${safeHref(post.url)}" target="_blank" rel="noopener noreferrer">${esc(post.author || '打开原帖')}</a>
+      <div class="u">${esc(post.date)}</div>
+      <div>${esc(post.text || '该帖没有可显示的正文')}</div></li>`).join('')}</ol>`;
   $('#modal').classList.add('show');
 }
 
@@ -1323,6 +1345,7 @@ function renderStep(p) {
   if (p.type === 'twitter') {
     const icon = p.status === 'running' ? '<span class="spin"></span>' : p.status === 'done' ? '✓' : '⚠';
     const right = p.status === 'login' ? '<button class="login-btn" data-twitter-login>登录 X</button>'
+      : p.status === 'done' && p.posts?.length ? `<button class="view" data-x-posts="${esc(p.tool_id || '')}">${esc(p.count)} 篇 · 查看 →</button>`
       : p.status === 'done' ? `<span class="prog">${esc(p.count)} 篇</span>`
       : `<span class="prog">${esc(p.error || '')}</span>`;
     const label = p.keyword ? `在 X 搜索 <span class="kw">「${esc(p.keyword)}」</span>` : '读取 X 原帖';
@@ -1401,11 +1424,13 @@ function renderThread(chat, jump) {
   const sc = $('#scroll');
   const nearBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 120;
   lastChat = chat;
+  const sourceLabel = source => ({auto: '默认（小红书）', twitter: 'X', both: '小红书 + X'})[source];
+  const sourceNote = source => sourceLabel(source) ? `<div class="qnote">调研来源 · ${esc(sourceLabel(source))}</div>` : '';
   const threadHtml = chat.messages.map((m, i) => cachedMessage(m, () => {
     if (m.role === 'user') {
       const imgs = (m.images || []).map(n => `<img src="/api/chats/${esc(chat.id)}/images/${esc(n)}" data-zoom>`).join('');
       return `<div class="msg user"><div class="col">${imgs ? `<div class="uimgs">${imgs}</div>` : ''}
-        ${m.text ? `<div class="bubble">${esc(m.text)}</div>` : ''}${m.recovered_queue ? `<div class="qnote">恢复的排队消息 · 尚未发送 <button data-reuse="${i}">恢复到输入框</button></div>` : ''}</div></div>`;
+        ${m.text ? `<div class="bubble">${esc(m.text)}</div>` : ''}${sourceNote(m.source)}${m.recovered_queue ? `<div class="qnote">恢复的排队消息 · 尚未发送 <button data-reuse="${i}">恢复到输入框</button></div>` : ''}</div></div>`;
     }
     const parts = (m.parts || []).map(p => p.type === 'text' ? `<div class="md">${p.html}</div>` : renderStep(p)).join('');
     const draft = m.draft_html ? `<div class="md caret">${m.draft_html}</div>` : '';
@@ -1421,7 +1446,7 @@ function renderThread(chat, jump) {
   })).concat((chat.queued || []).map(q => {
     const imgs = (q.images || []).map(n => `<img src="/api/chats/${esc(chat.id)}/images/${esc(n)}" data-zoom>`).join('');
     return `<div class="msg user queued"><div class="col">${imgs ? `<div class="uimgs">${imgs}</div>` : ''}
-      ${q.text ? `<div class="bubble">${esc(q.text)}</div>` : ''}
+      ${q.text ? `<div class="bubble">${esc(q.text)}</div>` : ''}${sourceNote(q.source)}
       <div class="qnote">排队中 · 当前回答结束后自动发送<button data-unqueue="${esc(q.id)}">取消</button></div></div></div>`;
   }));
   reconcileThread(threadHtml);
@@ -1433,6 +1458,7 @@ function renderThread(chat, jump) {
       if (current !== cid || route !== composerRoute) return;
       if (($('#input').value || pending.length) && !confirm('用恢复的消息替换当前输入草稿？')) return;
       $('#input').value = value.text; pending = value.images.map(p => ({...p, url: `data:${p.media_type};base64,${p.data}`}));
+      $('#researchSource').value = value.source || 'auto';
       draftEdits++; renderThumbs(); autosize(); saveComposerDraft(); $('#input').focus();
       if (value.missing_images) historyToast('部分原图片已不存在，已恢复可用内容');
     } catch (e) { historyToast(e.message); }
@@ -1440,6 +1466,7 @@ function renderThread(chat, jump) {
   document.querySelectorAll('[data-continue]').forEach(b => b.onclick = () => {
     if ($('#input').value || pending.length) return historyToast('请先发送或保存当前草稿，再继续中断的回答');
     const question = lastChat.messages.slice(0, +b.dataset.continue).reverse().find(m => m.role === 'user' && !m.recovered_queue);
+    $('#researchSource').value = question?.source || 'auto';
     $('#input').value = question?.text ? '请继续回答这个问题：\n' + question.text : '请继续上次被中断的回答。';
     draftEdits++; autosize(); saveComposerDraft(); $('#input').focus();
   });
@@ -1453,6 +1480,10 @@ function renderThread(chat, jump) {
   document.querySelectorAll('[data-web]').forEach(b => b.onclick = () => {
     const step = chat.messages.flatMap(m => m.parts || []).find(p => p.type === 'web' && p.tool_id === b.dataset.web);
     if (step) showWebResults(step);
+  });
+  document.querySelectorAll('[data-x-posts]').forEach(b => b.onclick = () => {
+    const step = chat.messages.flatMap(m => m.parts || []).find(p => p.type === 'twitter' && p.tool_id === b.dataset.xPosts);
+    if (step?.posts?.length) showTwitterResults(step);
   });
   document.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
     const m = lastChat.messages[+b.dataset.copy];
@@ -1606,11 +1637,13 @@ async function send() {
   if (!text && !pending.length) return;
   if (pending.length > 6) return historyToast('一次最多发送 6 张图片，请先移除部分图片');
   const sourceId = current, sourceKey = activeDraftKey, route = composerRoute;
+  const source = $('#researchSource').value || 'auto';
   const images = pending;
   $('#input').value = ''; pending = []; draftEdits++; saveComposerDraft(); sendInFlight = true; renderThumbs(); autosize();
   try {
     const {id, queued} = await api('/api/chats', {method: 'POST', body: JSON.stringify({
-      message: text, chat_id: sourceId, images: images.map(({media_type, data}) => ({media_type, data}))})});
+      message: text, chat_id: sourceId, source,
+      images: images.map(({media_type, data}) => ({media_type, data}))})});
     if (sourceKey !== activeDraftKey || route !== composerRoute) return;
     if (!sourceId) {
       const next = composerSnapshot(); writeDraft(id, next); writeDraft(sourceKey, {text: '', images: [], at: Date.now()}); activeDraftKey = id;
@@ -1620,9 +1653,9 @@ async function send() {
     if (queued) $('#scroll').scrollTop = $('#scroll').scrollHeight;
   } catch (e) {
     const latest = sourceKey === activeDraftKey ? composerSnapshot() : await readDraft(sourceKey);
-    const restored = {text: [text, latest.text].filter(Boolean).join('\n\n'), images: [...images, ...latest.images].filter((p, i, all) => all.findIndex(q => q.data === p.data && q.media_type === p.media_type) === i), at: Date.now()};
+    const restored = {text: [text, latest.text].filter(Boolean).join('\n\n'), source: latest.source || source, images: [...images, ...latest.images].filter((p, i, all) => all.findIndex(q => q.data === p.data && q.media_type === p.media_type) === i), at: Date.now()};
     await writeDraft(sourceKey, restored);
-    if (sourceKey === activeDraftKey) { $('#input').value = restored.text; pending = restored.images.map(p => ({...p, url: `data:${p.media_type};base64,${p.data}`})); draftEdits++; renderThumbs(); autosize(); }
+    if (sourceKey === activeDraftKey) { $('#input').value = restored.text; $('#researchSource').value = restored.source; pending = restored.images.map(p => ({...p, url: `data:${p.media_type};base64,${p.data}`})); draftEdits++; renderThumbs(); autosize(); }
     if (e.message.includes('设置')) openSettings(e.message); else alert(e.message);
   } finally { sendInFlight = false; updateComposer(); }
 }
@@ -1630,6 +1663,7 @@ $('#send').onclick = () => send();
 $('#stop').onclick = async () => { if (current) await api(`/api/chats/${current}/stop`, {method: 'POST'}).catch(() => {}); };
 function autosize() { const t = $('#input'); t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; updateComposer(); }
 $('#input').oninput = () => { draftEdits++; autosize(); saveComposerDraft(true); };
+$('#researchSource').onchange = () => { draftEdits++; saveComposerDraft(); };
 $('#input').onkeydown = e => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !TOUCH) { e.preventDefault(); send(); }
 };

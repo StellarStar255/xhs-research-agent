@@ -20,20 +20,20 @@ def _server_name(turn_id):
     return "xhs_" + turn_id[:16]
 
 
-def _mcp_server(root, turn_id):
-    command, args, env = launch_spec(turn_id)
+def _mcp_server(root, turn_id, source="auto"):
+    command, args, env = launch_spec(turn_id, source)
     env = {**env, "XHS_MCP_RESULTS": str(root / "tool-results.jsonl")}
     return {"name": _server_name(turn_id), "command": command, "args": args,
             "env": [{"name": key, "value": value} for key, value in env.items()]}
 
 
-def _write_workspace(root, turn_id):
+def _write_workspace(root, turn_id, source="auto"):
     config = root / ".agents"
     agents = config / "agents"
     agents.mkdir(parents=True)
     # Eager tools carry their schemas directly. Lazy tools require filesystem
     # access to the CLI's schema cache and the generic call_mcp_tool wrapper.
-    server = _mcp_server(root, turn_id)
+    server = _mcp_server(root, turn_id, source)
     mcp = {"mcpServers": {server["name"]: {
         "command": server["command"], "args": server["args"],
         "env": {entry["name"]: entry["value"] for entry in server["env"]}, "timeoutSeconds": 900,
@@ -91,16 +91,17 @@ def start(chat, text, images, turn_id):
     content.extend({"type": "image", "mimeType": image["media_type"], "data": image["data"]}
                    for image in images or [])
     workspace = tempfile.TemporaryDirectory(prefix="xhs-agy-")
+    source = agent.turn_source(chat)
     try:
         root = Path(workspace.name)
-        _write_workspace(root, turn_id)
+        _write_workspace(root, turn_id, source)
         proc = _spawn(root)
     except BaseException:
         workspace.cleanup()
         raise
 
     def pump(cid, proc, run):
-        _pump(cid, proc, run, workspace, content, turn_id, chat.get("model_config", {}))
+        _pump(cid, proc, run, workspace, content, turn_id, chat.get("model_config", {}), source)
 
     return agent.ClaudeRun(proc, pump, chat["id"])
 
@@ -112,7 +113,7 @@ def _error(text):
     return (text.strip() or "Antigravity CLI 未返回完整结果")[-500:]
 
 
-def _pump(cid, proc, run, workspace, content, turn_id, config):
+def _pump(cid, proc, run, workspace, content, turn_id, config, source="auto"):
     errors = []
 
     def drain():
@@ -132,7 +133,7 @@ def _pump(cid, proc, run, workspace, content, turn_id, config):
     timer.daemon = True
     timer.start()
     error = None
-    acp = Conversation(cid, proc, turn_id)
+    acp = Conversation(cid, proc, turn_id, source)
     try:
         acp.ask(workspace.name, content, config.get("antigravity_model", ""),
                 config.get("antigravity_effort", ""))
@@ -163,11 +164,12 @@ def _pump(cid, proc, run, workspace, content, turn_id, config):
 
 
 class Conversation:
-    def __init__(self, cid, proc, turn_id):
+    def __init__(self, cid, proc, turn_id, source="auto"):
         self.cid = cid
         self.proc = proc
         self.server = _server_name(turn_id)
         self.turn_id = turn_id
+        self.source = source
         self.session = None
         self.sequence = 0
         self.tool_names = {prefix + name: name for name in TOOL_NAMES for prefix in (
@@ -208,7 +210,7 @@ class Conversation:
             raise RuntimeError("Antigravity CLI 的 ACP 协议版本不受支持")
         # agy needs the ACP registration for discovery and the workspace
         # configuration for eager exposure of these tools to the model.
-        servers = [_mcp_server(Path(cwd), self.turn_id)] if self.cid is not None else []
+        servers = [_mcp_server(Path(cwd), self.turn_id, self.source)] if self.cid is not None else []
         if servers:
             self.results = Path(cwd) / "tool-results.jsonl"
         session = self.request("session/new", cwd=cwd, mcpServers=servers)

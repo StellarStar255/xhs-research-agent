@@ -296,7 +296,8 @@ def restore(cid):
                 if p.get("status") == "running":
                     p["status"] = "error"
         for q in chat.pop("queued", []):
-            chat["messages"].append({"role": "user", "text": q.get("text", ""), "images": q.get("images", []), "recovered_queue": True})
+            chat["messages"].append({"role": "user", "text": q.get("text", ""), "images": q.get("images", []),
+                                     "source": q.get("source", "auto"), "recovered_queue": True})
         moved = (source / "images").exists()
         if moved:
             (source / "images").rename(image_dir(cid))
@@ -336,9 +337,23 @@ def stop(cid):
 # ---------- turns ----------
 
 MAX_QUEUED = 5
+SOURCE_INSTRUCTIONS = {
+    "twitter": "本条消息明确选择了 X 作为调研来源。如需调研，只使用 X，遇到错误时说明原因。",
+    "both": "本条消息明确选择了小红书和 X。如需调研，请查询两个平台，并注明各自来源。",
+}
 
 
-def submit(cid, text, images=()):
+def source_question(text, source):
+    instruction = SOURCE_INSTRUCTIONS.get(source)
+    return f"{text or DEFAULT_IMAGE_PROMPT}\n\n（{instruction}）" if instruction else text
+
+
+def turn_source(chat):
+    return next((message.get("source", "auto") for message in reversed(chat.get("messages", []))
+                 if message.get("role") == "user"), "auto")
+
+
+def submit(cid, text, images=(), source="auto"):
     """Send a message: start a turn now, or — while this chat's turn is still running —
     queue it to be sent when that turn ends. Returns (chat id, queued)."""
     with _lock:
@@ -350,10 +365,11 @@ def submit(cid, text, images=()):
             if len(queue) >= MAX_QUEUED:
                 raise RuntimeError(f"最多排队 {MAX_QUEUED} 条，请等当前回答结束")
             qid = uuid.uuid4().hex[:8]
-            queue.append({"id": qid, "text": text, "images": _save_images(cid, images, f"q{qid}")})
+            queue.append({"id": qid, "text": text, "source": source,
+                          "images": _save_images(cid, images, f"q{qid}")})
             _save(chat)
             return cid, True
-        return send(cid, text, images), False
+        return send(cid, text, images, source=source), False
 
 
 def unqueue(cid, qid):
@@ -399,20 +415,24 @@ def _send_queued_later(cid):
             queue = chat.get("queued") or []
             if not queue or is_running(cid):
                 return
-            chat["queued"] = []
+            source = queue[0].get("source", "auto")
+            end = next((i for i, q in enumerate(queue) if q.get("source", "auto") != source), len(queue))
+            batch, chat["queued"] = queue[:end], queue[end:]
             _save(chat)
-            text = "\n\n".join(q["text"] for q in queue if q.get("text"))
-            names = [n for q in queue for n in q.get("images") or []]
+            text = "\n\n".join(q["text"] for q in batch if q.get("text"))
+            names = [n for q in batch for n in q.get("images") or []]
             try:
-                send(cid, text, names=names)
+                send(cid, text, names=names, source=source)
             except Exception as e:
                 def fail(chat, msg, e=e):
                     msg.update(status="error", error=f"排队的消息没能发送：{e}")
                 update(cid, fail)
+                if chat["queued"]:
+                    _send_queued_later(cid)
     threading.Thread(target=run, daemon=True).start()
 
 
-def send(cid, text, images=(), names=None):
+def send(cid, text, images=(), names=None, source="auto"):
     """Start a turn. Returns the chat id (creating a chat if cid is None).
 
     images: [{"media_type": "image/png", "data": <base64>}] — saved next to the chat
@@ -459,13 +479,14 @@ def send(cid, text, images=(), names=None):
             names = _save_images(cid, images, f"{len(chat['messages']):03d}")
         else:
             images = _user_images(cid, names)
-        chat["messages"].append({"role": "user", "text": text, "images": names})
+        chat["messages"].append({"role": "user", "text": text, "images": names, "source": source})
         chat["messages"].append({"role": "assistant", "parts": [], "draft": "", "status": "running",
                                  "started": time.time(), "model": _model_label(chat)})
         chat["updated"] = time.strftime("%Y-%m-%d %H:%M")
         _save(chat)
 
         backend = chat.get("backend", "claude")
+        question = source_question(text, source)
         turn_id = uuid.uuid4().hex  # scopes per-turn budgets (searches, images) across processes
         run = None
         try:
@@ -473,12 +494,12 @@ def send(cid, text, images=(), names=None):
                 run = llm.start(cid, turn_id)
             elif backend == "codex":
                 from . import codex_backend
-                run = codex_backend.start(chat, text, names, turn_id)
+                run = codex_backend.start(chat, question, names, turn_id)
             elif backend == "antigravity":
                 from . import antigravity_backend
-                run = antigravity_backend.start(chat, text, images, turn_id)
+                run = antigravity_backend.start(chat, question, images, turn_id)
             else:
-                run = _start_claude(chat, text, images, turn_id)
+                run = _start_claude(chat, question, images, turn_id)
             _runs[cid] = run  # register before any worker can finish
             _keep_awake(True)
             run.start()
@@ -595,7 +616,7 @@ def _start_claude(chat, text, images, turn_id=""):
     content.append({"type": "text", "text": text or DEFAULT_IMAGE_PROMPT})
     from .tools import TOOLS_TEXT
     from .mcp_server import launch_spec
-    command, args, mcp_env = launch_spec(turn_id or uuid.uuid4().hex)
+    command, args, mcp_env = launch_spec(turn_id or uuid.uuid4().hex, turn_source(chat))
     mcp_config = json.dumps({"mcpServers": {"xhs": {"command": command, "args": args, "env": mcp_env}}})
     # No built-in tools that touch the machine (no Bash, no Read: Read can't be confined to a
     # folder); our MCP server's tools enforce the per-turn budgets themselves. WebSearch (if the
@@ -638,8 +659,21 @@ def apply_tool_output(step, out, is_error=False):
         match = re.match(r"X 帖子数: (\d+)", out)
         if match and not is_error:
             step.update(status="done", count=int(match[1]))
+            from . import twitter
+            try:
+                posts = json.loads(out.partition("\n")[2])
+                if isinstance(posts, list):
+                    step["posts"] = [
+                        {"url": twitter.post_url(post["url"])[0], "author": post["author"][:300],
+                         "date": post["date"][:64], "text": post["text"][:500]}
+                        for post in posts[:12]
+                    ]
+            except (ValueError, KeyError, TypeError, twitter.BrowseError):
+                pass  # Some clients may truncate tool output. Keep the reported count.
         elif out.startswith("X_LOGIN_REQUIRED:"):
             step.update(status="login", error=out.partition(":")[2].strip())
+        elif out.startswith("X_LIMITED:"):
+            step.update(status="limited", error=out.partition(":")[2].strip())
         else:
             step.update(status="error", error=out.strip()[:200])
         return
@@ -884,7 +918,8 @@ def _retry_without_resume(cid, previous):
         _save(chat)
         run = None
         try:
-            run = _start_claude(chat, user.get("text") or "", _user_images(cid, user.get("images")))
+            question = source_question(user.get("text") or "", user.get("source", "auto"))
+            run = _start_claude(chat, question, _user_images(cid, user.get("images")))
             _runs[cid] = run
             run.start()
             previous.done.set()
@@ -940,7 +975,8 @@ def recover():
         queue = chat.pop("queued", [])
         if queue:
             for q in queue:
-                chat["messages"].append({"role": "user", "text": q.get("text", ""), "images": q.get("images", []), "recovered_queue": True})
+                chat["messages"].append({"role": "user", "text": q.get("text", ""), "images": q.get("images", []),
+                                         "source": q.get("source", "auto"), "recovered_queue": True})
             changed = True
         if changed:
             _save(chat)

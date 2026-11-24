@@ -85,13 +85,14 @@ TOOLS_TEXT = f"""小红书工具按「先看列表，再挑着点开」使用：
 class ToolRunner:
     """Runs tool calls for one research turn, keeping that turn's budgets."""
 
-    def __init__(self, turn_id="", on_proc=None, cancelled=None):
+    def __init__(self, turn_id="", on_proc=None, cancelled=None, source="auto"):
         self.turn_id = turn_id
         self.on_proc = on_proc or (lambda p: None)  # lets a caller stop a running scrape
         self.searches = 0
         self.opened = 0
         self.x_calls = 0
         self.x_blocked = ""
+        self.source = source
         self.cancelled = cancelled or (lambda: False)
 
     def _cli(self, *args):
@@ -118,6 +119,9 @@ class ToolRunner:
         if self.cancelled():
             return self._result("已被用户停止。", True)
         name = name.rsplit("__", 1)[-1]
+        if self.source == "twitter" and name in ("search_xiaohongshu", "open_notes",
+                                                  "read_previous_notes", "view_note_images"):
+            return self._result("本轮选择了 X，请使用 X 调研工具。", True)
         if name in ("search_twitter", "read_twitter_post"):
             search = name == "search_twitter"
             key = "keyword" if search else "url"

@@ -201,8 +201,10 @@ def run_turn(run):
     cid = run.cid
     chat = agent.load(cid)
     user = chat["messages"][-2]
+    run.tools.source = user.get("source", "auto")
     history = _repair(chat.get("llm_history") or [])
-    history.append({"role": "user", "content": _user_content(cid, user["text"], user.get("images"))})
+    question = agent.source_question(user["text"], user.get("source", "auto"))
+    history.append({"role": "user", "content": _user_content(cid, question, user.get("images"))})
     cl, model = client(chat_conf(chat))
     run.client = cl
     prompt = agent.system_prompt(TOOLS_TEXT)

@@ -8,6 +8,7 @@ import sqlite3
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -126,6 +127,7 @@ class ChatReq(BaseModel):
     message: str = ""  # bounded below before storing or sending to a model
     chat_id: str | None = None
     images: list[Image] = []
+    source: Literal["auto", "twitter", "both"] = "auto"
 
 
 class ApiConf(BaseModel):
@@ -376,7 +378,8 @@ def send(req: ChatReq):
         if len(img.data) > 7_000_000:  # ~5MB decoded
             raise HTTPException(400, "图片太大（单张最多约 5MB）")
     try:
-        cid, queued = agent.submit(req.chat_id, req.message.strip(), [i.model_dump() for i in req.images])
+        cid, queued = agent.submit(req.chat_id, req.message.strip(), [i.model_dump() for i in req.images],
+                                   source=req.source)
         return {"id": cid, "queued": queued}
     except FileNotFoundError:
         raise HTTPException(404, "对话不存在")
@@ -568,7 +571,8 @@ def reuse_message(cid: str, index: int):
         if len(names) > 6 or any((agent.image_dir(cid) / n).exists() and (agent.image_dir(cid) / n).stat().st_size > 5_250_000 for n in names):
             raise HTTPException(413, "原消息图片过多或过大，请复制文字后重新选择图片")
         images = agent._user_images(cid, names)
-        return {"text": message.get("text", ""), "images": images, "missing_images": len(names) - len(images)}
+        return {"text": message.get("text", ""), "images": images, "missing_images": len(names) - len(images),
+                "source": message.get("source", "auto")}
     except (FileNotFoundError, ValueError):
         raise HTTPException(404, "找不到原消息或附件")
 
@@ -798,7 +802,14 @@ def _finish_twitter_login(p):
 
 @app.get("/api/login/twitter/status")
 def twitter_login_status():
+    from . import twitter
     with _login_lock:
+        if _twitter_login["state"] in ("idle", "done"):
+            observed = twitter.login_state()
+            if observed == "expired":
+                return {"state": "expired", "message": "X 登录已过期或尚未登录"}
+            if observed == "done":
+                return {"state": "done", "message": "已登录 X"}
         return {"state": _twitter_login["state"], "message": _twitter_login["message"]}
 
 

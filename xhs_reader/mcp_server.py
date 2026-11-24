@@ -15,7 +15,7 @@ from .images import MIME
 from .tools import TOOLS, ToolRunner
 
 PROTOCOL = "2025-06-18"
-_runner = ToolRunner(os.environ.get("XHS_TURN_ID", ""))
+_runner = ToolRunner(os.environ.get("XHS_TURN_ID", ""), source=os.environ.get("XHS_RESEARCH_SOURCE", "auto"))
 
 
 def call_tool(name, args):
@@ -42,9 +42,11 @@ def _record_tool_result(name, content, is_error):
             pass
 
 
-def launch_spec(turn_id):
+def launch_spec(turn_id, source="auto"):
     """(command, args, env) that starts this server, for the agent CLIs' MCP configs."""
     env = {"XHS_DATA_DIR": str(paths.DATA_DIR), "XHS_TURN_ID": turn_id}
+    if source != "auto":
+        env["XHS_RESEARCH_SOURCE"] = source
     if paths.FROZEN:
         return str(paths.cli_executable()), ["mcp"], env
     env["PYTHONPATH"] = str(paths.ROOT)
