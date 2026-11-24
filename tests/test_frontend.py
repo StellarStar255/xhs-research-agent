@@ -93,6 +93,21 @@ class FrontendTests(IsolatedTest):
                     expect(gui.locator('#twitterLoginText')).to_have_text('已登录 X', timeout=12000)
                     expect(gui.locator('.login-card')).to_be_visible()
                     expect(gui.locator('#loginText')).to_have_text('未登录小红书')
+                    closed = 'X 登录窗口已关闭，请点「登录 X」重试。'
+                    gui.unroute('**/api/login/twitter/status', twitter_status)
+                    gui.route('**/api/login/twitter/status', lambda route: route.fulfill(
+                        json={'state': 'failed', 'message': closed}))
+                    gui.evaluate("""async () => {
+                        document.documentElement.style.setProperty('--sidebar-width', '240px');
+                        await updateTwitterLogin();
+                    }""")
+                    expect(gui.locator('#twitterLoginText')).to_have_attribute('title', closed)
+                    xhs_button = gui.locator('#loginBtn').bounding_box()
+                    x_button = gui.locator('#twitterLogin button').bounding_box()
+                    for dimension in ('x', 'width', 'height'):
+                        self.assertAlmostEqual(xhs_button[dimension], x_button[dimension])
+                    self.assertEqual(gui.locator('#twitterLogin button').evaluate(
+                        "button => getComputedStyle(button).whiteSpace"), 'nowrap')
                     gui.route('**/api/login', lambda route: route.fulfill(status=503,
                               json={'detail': '找不到登录程序'}))
                     gui.locator('.login-card [data-login]').click()

@@ -99,10 +99,12 @@ body.resizing { cursor: col-resize; user-select: none; }
 .chat-item.pinned .pin { visibility: visible; color: var(--accent); }
 .login { padding: 12px 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted);
          display: flex; align-items: center; gap: 6px; }
+.login-status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
 .dot.on { background: var(--ok); } .dot.off { background: var(--accent); }
 .login button { margin-left: auto; border: 1px solid var(--accent); color: var(--accent); background: none;
-                border-radius: 6px; font-size: 12px; padding: 1px 8px; }
+                border-radius: 6px; font-size: 12px; padding: 1px 8px; flex: 0 0 72px;
+                min-height: 26px; white-space: nowrap; }
 
 /* conversation */
 main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -336,9 +338,10 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   </div>
   <div id="chatListStatus" role="status" hidden><span id="chatListError"></span> <button id="chatListRetry" class="gear">重试</button></div>
   <div class="chats" id="chats" aria-label="历史对话列表"></div>
-  <div class="login"><span class="dot" id="dot"></span><span id="loginText">检查登录中…</span>
+  <div class="login"><span class="dot" id="dot"></span><span class="login-status" id="loginText">检查登录中…</span>
     <button id="loginBtn" data-login hidden>扫码登录</button></div>
-  <div class="login" id="twitterLogin"><span id="twitterLoginText" role="status">Twitter（X）</span>
+  <div class="login" id="twitterLogin"><span class="dot" aria-hidden="true"></span>
+    <span class="login-status" id="twitterLoginText" role="status">Twitter（X）</span>
     <button data-twitter-login>登录 X</button></div>
   <div class="limits" id="limits"></div>
   <div class="foot"><button class="gear" id="gear">⚙ 设置 · <span id="backendLabel">…</span></button>
@@ -1066,12 +1069,13 @@ async function updateTwitterLogin(start = false) {
   twitterLoginPending = true;
   const text = $('#twitterLoginText');
   const button = $('#twitterLogin button');
+  const showStatus = message => { text.textContent = message; text.title = message; };
   button.disabled = true;
   try {
     let result = start ? await api('/api/login/twitter', {method: 'POST'})
       : await api('/api/login/twitter/status');
     for (let attempt = 0; result.state === 'waiting' && attempt < 140; attempt++) {
-      text.textContent = '请在 Chrome 登录 X';
+      showStatus('请在 Chrome 登录 X');
       await new Promise(resolve => setTimeout(resolve, 2500));
       try {
         result = await api('/api/login/twitter/status');
@@ -1079,10 +1083,10 @@ async function updateTwitterLogin(start = false) {
         // A failed status request doesn't cancel the Chrome login process.
       }
     }
-    text.textContent = result.state === 'waiting' ? '暂时无法确认 X 登录结果，请重试'
-      : result.message || 'Twitter（X）';
+    showStatus(result.state === 'waiting' ? '暂时无法确认 X 登录结果，请重试'
+      : result.message || 'Twitter（X）');
   } catch (e) {
-    if (start) text.textContent = 'X 登录失败：' + e.message;
+    if (start) showStatus('X 登录失败：' + e.message);
   } finally {
     button.disabled = false;
     twitterLoginPending = false;
