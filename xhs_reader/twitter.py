@@ -70,19 +70,24 @@ def _open(page, url):
 def login(timeout_s=300):
     """Let the user enter credentials and complete any checks on x.com."""
     with browser(wait_s=0) as page:
-        _open(page, HOME + "/home")
-        account = page.locator(ACCOUNT + ":visible").first
         try:
-            account.wait_for(timeout=3000)
-            return
-        except scraper.PlaywrightTimeout:
-            pass
-        if not _login_required(page):
-            _open(page, HOME + "/i/flow/login")
-        try:
-            account.wait_for(timeout=timeout_s * 1000)
-        except scraper.PlaywrightTimeout as exc:
-            raise BrowseError("X 登录超时，请再试一次。") from exc
+            _open(page, HOME + "/home")
+            account = page.locator(ACCOUNT + ":visible").first
+            try:
+                account.wait_for(timeout=3000)
+                return
+            except scraper.PlaywrightTimeout:
+                pass
+            if not _login_required(page):
+                _open(page, HOME + "/i/flow/login")
+            try:
+                account.wait_for(timeout=timeout_s * 1000)
+            except scraper.PlaywrightTimeout as exc:
+                raise BrowseError("X 登录超时，请再试一次。") from exc
+        except scraper.PlaywrightError as exc:
+            if page.is_closed():
+                raise BrowseError("X 登录窗口已关闭，请点「登录 X」重试。") from exc
+            raise
 
 
 def _login_required(page):

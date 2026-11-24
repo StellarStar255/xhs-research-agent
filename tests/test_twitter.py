@@ -10,6 +10,15 @@ from xhs_reader.tools import ToolRunner
 
 
 class TwitterTests(IsolatedTest):
+    def test_closed_login_window_has_a_retry_message(self):
+        page = Mock()
+        page.goto.side_effect = scraper.PlaywrightError("Target page has been closed")
+        page.is_closed.return_value = True
+        with patch.object(twitter, "browser", return_value=nullcontext(page)):
+            with self.assertRaisesRegex(twitter.BrowseError, "登录窗口已关闭"):
+                twitter.login()
+        page.remove_listener.assert_called_once()
+
     def test_chrome_uses_its_own_profile_and_lock(self):
         context = Mock(pages=[object()])
         with file_lock(self.tmp / "browser.guard", timeout=0):

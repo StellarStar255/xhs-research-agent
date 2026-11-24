@@ -82,10 +82,15 @@ class FrontendTests(IsolatedTest):
                         expect(page.locator('.login-card')).to_be_visible()
                     gui.route('**/api/login/twitter', lambda route: route.fulfill(
                         json={'state': 'waiting', 'message': ''}))
-                    gui.route('**/api/login/twitter/status', lambda route: route.fulfill(
-                        json={'state': 'done', 'message': '已登录 X'}))
+                    status_codes = iter([503, 200])
+
+                    def twitter_status(route):
+                        code = next(status_codes, 200)
+                        route.fulfill(status=code, json={'state': 'done', 'message': '已登录 X'})
+
+                    gui.route('**/api/login/twitter/status', twitter_status)
                     gui.locator('#twitterLogin button').click()
-                    expect(gui.locator('#twitterLoginText')).to_have_text('已登录 X')
+                    expect(gui.locator('#twitterLoginText')).to_have_text('已登录 X', timeout=12000)
                     expect(gui.locator('.login-card')).to_be_visible()
                     expect(gui.locator('#loginText')).to_have_text('未登录小红书')
                     gui.route('**/api/login', lambda route: route.fulfill(status=503,

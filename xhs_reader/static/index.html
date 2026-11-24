@@ -1073,9 +1073,14 @@ async function updateTwitterLogin(start = false) {
     for (let attempt = 0; result.state === 'waiting' && attempt < 140; attempt++) {
       text.textContent = '请在 Chrome 登录 X';
       await new Promise(resolve => setTimeout(resolve, 2500));
-      result = await api('/api/login/twitter/status');
+      try {
+        result = await api('/api/login/twitter/status');
+      } catch {
+        // A failed status request doesn't cancel the Chrome login process.
+      }
     }
-    text.textContent = result.message || 'Twitter（X）';
+    text.textContent = result.state === 'waiting' ? '暂时无法确认 X 登录结果，请重试'
+      : result.message || 'Twitter（X）';
   } catch (e) {
     if (start) text.textContent = 'X 登录失败：' + e.message;
   } finally {
