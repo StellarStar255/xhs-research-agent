@@ -184,11 +184,11 @@ def browser(headless=True, wait_s=900):
 
 
 @contextmanager
-def _browser_context(headless):
+def _browser_context(headless, profile_dir=None):
     with sync_playwright() as p:
         channel, _ = _pick_browser(p)
         ctx = p.chromium.launch_persistent_context(
-            str(PROFILE_DIR),
+            str(PROFILE_DIR if profile_dir is None else profile_dir),
             channel=channel,
             headless=headless,
             viewport={"width": 1280, "height": 900},

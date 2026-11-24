@@ -112,6 +112,7 @@ def mobile_reset():
     return mobile_status()
 _status = {"at": 0, "value": None}
 _login = {"proc": None, "state": "idle", "message": ""}
+_twitter_login = {"proc": None, "state": "idle", "message": ""}
 _login_lock = threading.Lock()
 _status_probe = threading.Lock()
 
@@ -724,26 +725,35 @@ def _login_status(refresh):
 @app.post("/api/login")
 def login():
     """Open a visible Chrome window with the QR code; poll /api/login/status for the result."""
+    return _start_login(_login, "login", _finish_login, "无法等待扫码结果，请重试")
+
+
+@app.post("/api/login/twitter")
+def twitter_login():
+    return _start_login(_twitter_login, "x-login", _finish_twitter_login, "无法等待 X 登录结果，请重试")
+
+
+def _start_login(state, command, finish, wait_error):
     _require_notice()
     with _login_lock:
         if server and server.should_exit:
-            raise HTTPException(503, "应用正在退出，请重新打开后再扫码")
-        if _login["proc"] is None:
+            raise HTTPException(503, "应用正在退出，请重新打开后再登录")
+        if state["proc"] is None:
             try:
                 paths.DATA_DIR.mkdir(parents=True, exist_ok=True)
-                p = procutil.popen(paths.cli_command("login"), cwd=paths.DATA_DIR, env=paths.child_env(),
+                p = procutil.popen(paths.cli_command(command), cwd=paths.DATA_DIR, env=paths.child_env(),
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, text=True)
             except OSError as e:
                 raise HTTPException(503, f"无法启动登录程序：{e}") from e
-            _login.update(state="waiting", message="", proc=p)
+            state.update(state="waiting", message="", proc=p)
             try:
-                threading.Thread(target=_finish_login, args=(p,), daemon=True).start()
+                threading.Thread(target=finish, args=(p,), daemon=True).start()
             except RuntimeError:
-                _login.update(state="failed", message="无法等待扫码结果，请重试", proc=None)
+                state.update(state="failed", message=wait_error, proc=None)
                 procutil.kill_tree(p, timeout=1)
-                raise HTTPException(503, _login["message"])
-    return login_status()
+                raise HTTPException(503, wait_error)
+        return {"state": state["state"], "message": state["message"]}
 
 
 def _finish_login(p):
@@ -770,6 +780,26 @@ def _finish_login(p):
 def login_status():
     with _login_lock:
         return {"state": _login["state"], "message": _login["message"]}
+
+
+def _finish_twitter_login(p):
+    try:
+        out, _ = p.communicate()
+    except OSError:
+        out = ""
+    with _login_lock:
+        if _twitter_login["proc"] is not p:
+            return
+        done = p.returncode == 0 and "已登录 X" in out.splitlines()
+        details = [line for line in out.strip().splitlines() if not line.startswith("[PYI-")]
+        message = "已登录 X" if done else (details or ["X 登录没有完成，请重试。"])[-1][:200]
+        _twitter_login.update(state="done" if done else "failed", message=message, proc=None)
+
+
+@app.get("/api/login/twitter/status")
+def twitter_login_status():
+    with _login_lock:
+        return {"state": _twitter_login["state"], "message": _twitter_login["message"]}
 
 
 @app.get("/api/ping")
@@ -862,10 +892,12 @@ def shutdown():
     with _login_lock:
         if server:
             server.should_exit = True
-        login_proc = _login["proc"]
-        if login_proc is not None:
-            _login.update(proc=None, state="idle", message="")
-    if login_proc is not None:
+        login_procs = []
+        for state in (_login, _twitter_login):
+            if state["proc"] is not None:
+                login_procs.append(state["proc"])
+                state.update(proc=None, state="idle", message="")
+    for login_proc in login_procs:
         procutil.kill_tree(login_proc, timeout=1)
     if on_shutdown:
         threading.Thread(target=on_shutdown, daemon=True).start()  # don't block the response

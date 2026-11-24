@@ -634,6 +634,15 @@ def _start_claude(chat, text, images, turn_id=""):
 
 def apply_tool_output(step, out, is_error=False):
     """Fill a search/open/read step from the tool's output."""
+    if step["type"] == "twitter":
+        match = re.match(r"X 帖子数: (\d+)", out)
+        if match and not is_error:
+            step.update(status="done", count=int(match[1]))
+        elif out.startswith("X_LOGIN_REQUIRED:"):
+            step.update(status="login", error=out.partition(":")[2].strip())
+        else:
+            step.update(status="error", error=out.strip()[:200])
+        return
     m = re.search(r"SESSION (\S+)", out)
     if m:
         step["session"] = m.group(1)
@@ -660,6 +669,8 @@ def tool_step(name, args, tool_id):
     step = {"tool_id": tool_id, "status": "running"}
     if name == "search_xiaohongshu":
         step.update(type="search", keyword=str(args.get("keyword", "")))
+    elif name in ("search_twitter", "read_twitter_post"):
+        step.update(type="twitter", keyword=str(args.get("keyword", "")))
     elif name in ("WebSearch", "web_search"):
         step.update(type="web", query=str(args.get("query", "")))
     elif name == "open_notes":

@@ -166,6 +166,9 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("login")
     sub.add_parser("status")
+    sub.add_parser("x-login", help="sign in to X in a separate Chrome profile")
+    sub.add_parser("x-search", help="search X in the signed-in browser").add_argument("keyword")
+    sub.add_parser("x-read", help="read an X status URL").add_argument("url")
     f = sub.add_parser("find", help="search; print the results list without opening any note")
     f.add_argument("keyword")
     f.add_argument("-n", "--limit", type=int, default=20)
@@ -216,6 +219,27 @@ def main(argv=None):
             print((str(e).splitlines() or [type(e).__name__])[0], file=sys.stderr)
             return 1
         print(f"已登录：{me.get('nickname') or ''}")
+    elif a.cmd in ("x-login", "x-search", "x-read"):
+        from . import twitter
+
+        sys.stdout.reconfigure(encoding="utf-8")
+        try:
+            if a.cmd == "x-login":
+                twitter.login()
+                print("已登录 X")
+            elif a.cmd == "x-search":
+                print(twitter.digest(twitter.search(a.keyword)))
+            else:
+                print(twitter.digest(twitter.read(a.url)))
+        except TimeoutError:
+            print("X 浏览器正在执行另一项任务，请稍后重试。")
+            return 1
+        except (twitter.BrowseError, scraper.NoBrowser) as e:
+            print(str(e))
+            return 1
+        except (scraper.PlaywrightError, OSError):
+            print("X 浏览器或网页无法打开。请确认 Chrome 和网络可用，或重新点击「登录 X」。")
+            return 1
     elif a.cmd == "status":
         print(json.dumps(scraper.status(), ensure_ascii=False))
     elif a.cmd == "find":

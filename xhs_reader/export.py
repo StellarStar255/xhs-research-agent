@@ -114,17 +114,24 @@ def _replace_names(text, names):
     return text
 
 
-_NOTE_LINK = re.compile(r"\[([^\]]+)\]\((https?://(?:www\.)?xiaohongshu\.com/(?:explore|discovery/item)/([0-9a-zA-Z]+)[^)\s]*)\)")
+_POST_LINK = re.compile(
+    r"\[([^\]]+)\]\((https?://(?:www\.)?(?:"
+    r"xiaohongshu\.com/(?:explore|discovery/item)/([0-9a-zA-Z]+)"
+    r"|(?:x|twitter)\.com/(?:[A-Za-z0-9_]{1,15}|i/web)/status/([0-9]{1,20})"
+    r")[^\s)]*)\)"
+)
 
 
 def _sources(texts):
-    """The Xiaohongshu notes the answers link to, in order, once each: [(title, url, id)]."""
+    """Return linked posts in order, once per platform and post ID."""
     seen, out = set(), []
     for t in texts:
-        for title, url, nid in _NOTE_LINK.findall(t):
-            if nid not in seen:
-                seen.add(nid)
-                out.append((title, url, nid))
+        for title, url, note_id, post_id in _POST_LINK.findall(t):
+            key = ("xhs", note_id) if note_id else ("x", post_id)
+            if key not in seen:
+                seen.add(key)
+                label = f"xiaohongshu.com/explore/{note_id}" if note_id else f"x.com/i/web/status/{post_id}"
+                out.append((title, url, label))
     return out
 
 
@@ -133,6 +140,8 @@ def _steps(msg):
     for p in msg.get("parts", []):
         if p["type"] == "search" and p.get("keyword"):
             out.append(f"🔍 在小红书搜索「{p['keyword']}」" + (f"，找到 {p['count']} 篇" if p.get("count") else ""))
+        elif p["type"] == "twitter" and p.get("status") == "done":
+            out.append(f"🔍 在 X 搜索「{p['keyword']}」" if p.get("keyword") else "📖 读取 X 原帖")
         elif p["type"] == "open" and p.get("status") == "done":
             out.append(f"📖 读了 {p.get('count') or len(p.get('notes') or [])} 篇笔记")
         elif p["type"] == "images" and p.get("status") == "done":
@@ -171,11 +180,17 @@ def build_html(cid, index=None, hide_names=False):
             + f'<div class="md">{_md(_hide(text, names))}</div></div>')
     date = time.strftime("%Y-%m-%d")
     sources = _sources(answers)
+    has_x = any(label.startswith("x.com/") for _, _, label in sources)
+    source_heading = ("<h3>原帖来源</h3><p>完整内容请查看原帖。</p>" if has_x else
+                      "<h3>原笔记</h3><p>以上内容整理自下面这些小红书笔记，完整内容和评论请看原文。</p>")
     src = "" if not sources else (
-        '<section class="src"><h3>原笔记</h3><p>以上内容整理自下面这些小红书笔记，完整内容和评论请看原文。</p><ol>'
+        '<section class="src">' + source_heading + '<ol>'
         + "".join(f'<li><a href="{html.escape(u)}">{html.escape(_hide(t, names))}</a><br>'
-                  f'<span class="u">xiaohongshu.com/explore/{html.escape(i)}</span></li>' for t, u, i in sources)
+                  f'<span class="u">{html.escape(label)}</span></li>' for t, u, label in sources)
         + "</ol></section>")
+    footer = ("内容仅供参考，以原帖为准。<br>由开源工具 xhs-research-agent 生成，与小红书或 X 官方均无关"
+              if has_x else "内容整理自小红书用户公开的笔记和评论，仅供参考，以原笔记为准。<br>"
+                            "由开源工具 xhs-research-agent 生成，与小红书官方无关")
     page = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>{html.escape(title)}</title><style>{CSS}</style></head>
@@ -183,8 +198,7 @@ def build_html(cid, index=None, hide_names=False):
 <div class="meta">{chat.get('created', date)}</div></header>
 {''.join(blocks)}
 {src}
-<footer>内容整理自小红书用户公开的笔记和评论，仅供参考，以原笔记为准。<br>
-由开源工具 xhs-research-agent 生成，与小红书官方无关 · {date}</footer>
+<footer>{footer} · {date}</footer>
 </div></body></html>"""
     return title, re.sub(r'<a href="(https?://[^"]+)"', r'<a href="\1" target="_blank" rel="noopener"', page)
 

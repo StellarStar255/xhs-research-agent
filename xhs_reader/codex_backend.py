@@ -142,7 +142,7 @@ def _handle(chat, msg, ev):
             if step:
                 if item.get("status") == "completed":
                     text, is_error = _tool_text(item)
-                    if step["type"] in ("search", "open", "read"):
+                    if step["type"] in ("search", "open", "read", "twitter"):
                         agent.apply_tool_output(step, text, is_error)
                     elif step["type"] == "images":
                         n = sum(1 for c in (item.get("result") or {}).get("content") or []

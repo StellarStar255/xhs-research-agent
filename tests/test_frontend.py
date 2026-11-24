@@ -80,6 +80,14 @@ class FrontendTests(IsolatedTest):
                     for page in (gui, web):
                         page.goto(url)
                         expect(page.locator('.login-card')).to_be_visible()
+                    gui.route('**/api/login/twitter', lambda route: route.fulfill(
+                        json={'state': 'waiting', 'message': ''}))
+                    gui.route('**/api/login/twitter/status', lambda route: route.fulfill(
+                        json={'state': 'done', 'message': '已登录 X'}))
+                    gui.locator('#twitterLogin button').click()
+                    expect(gui.locator('#twitterLoginText')).to_have_text('已登录 X')
+                    expect(gui.locator('.login-card')).to_be_visible()
+                    expect(gui.locator('#loginText')).to_have_text('未登录小红书')
                     gui.route('**/api/login', lambda route: route.fulfill(status=503,
                               json={'detail': '找不到登录程序'}))
                     gui.locator('.login-card [data-login]').click()

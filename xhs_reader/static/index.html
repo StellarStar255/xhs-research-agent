@@ -292,7 +292,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .mobile-qr .u { font-size: 12px; color: var(--muted); word-break: break-all; }
 
 /* phone access (remote clients can't change settings or quit; see server.py) */
-.remote #quit, .remote #updBanner, .remote #loginBtn, .remote .step .login-btn { display: none !important; }
+.remote #quit, .remote #updBanner, .remote #loginBtn, .remote .step .login-btn, .remote #twitterLogin { display: none !important; }
 
 /* phone layout: the sidebar becomes a slide-in menu */
 .topbar, .backdrop { display: none; }
@@ -338,6 +338,8 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   <div class="chats" id="chats" aria-label="历史对话列表"></div>
   <div class="login"><span class="dot" id="dot"></span><span id="loginText">检查登录中…</span>
     <button id="loginBtn" data-login hidden>扫码登录</button></div>
+  <div class="login" id="twitterLogin"><span id="twitterLoginText" role="status">Twitter（X）</span>
+    <button data-twitter-login>登录 X</button></div>
   <div class="limits" id="limits"></div>
   <div class="foot"><button class="gear" id="gear">⚙ 设置 · <span id="backendLabel">…</span></button>
     <button class="gear quit" id="quit" title="关闭后台服务">退出</button></div>
@@ -1058,6 +1060,30 @@ async function startLogin() {
   }, 2500);
 }
 document.addEventListener('click', e => { if (e.target.closest('[data-login]')) startLogin(); });
+let twitterLoginPending = false;
+async function updateTwitterLogin(start = false) {
+  if (REMOTE || twitterLoginPending) return;
+  twitterLoginPending = true;
+  const text = $('#twitterLoginText');
+  const button = $('#twitterLogin button');
+  button.disabled = true;
+  try {
+    let result = start ? await api('/api/login/twitter', {method: 'POST'})
+      : await api('/api/login/twitter/status');
+    for (let attempt = 0; result.state === 'waiting' && attempt < 140; attempt++) {
+      text.textContent = '请在 Chrome 登录 X';
+      await new Promise(resolve => setTimeout(resolve, 2500));
+      result = await api('/api/login/twitter/status');
+    }
+    text.textContent = result.message || 'Twitter（X）';
+  } catch (e) {
+    if (start) text.textContent = 'X 登录失败：' + e.message;
+  } finally {
+    button.disabled = false;
+    twitterLoginPending = false;
+  }
+}
+document.addEventListener('click', e => { if (e.target.closest('[data-twitter-login]')) updateTwitterLogin(true); });
 const hm = ts => new Date(ts * 1000).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'});
 // "16:40", or "明天 16:40" when it's not today.
 const when = ts => (new Date(ts * 1000).toDateString() === new Date().toDateString() ? '' : '明天 ') + hm(ts);
@@ -1079,7 +1105,7 @@ function renderLimits(l) {
 }
 setInterval(() => { if (!document.hidden && !loginStarting) loadStatus(); }, 5000);
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) { loadStatus(); loadSettings().catch(() => {}); }
+  if (!document.hidden) { loadStatus(); updateTwitterLogin(); loadSettings().catch(() => {}); }
 });
 
 
@@ -1285,6 +1311,14 @@ setInterval(updateTaskProgress, 1000);
 $('#taskStop').onclick = () => $('#stop').click();
 
 function renderStep(p) {
+  if (p.type === 'twitter') {
+    const icon = p.status === 'running' ? '<span class="spin"></span>' : p.status === 'done' ? '✓' : '⚠';
+    const right = p.status === 'login' ? '<button class="login-btn" data-twitter-login>登录 X</button>'
+      : p.status === 'done' ? `<span class="prog">${esc(p.count)} 篇</span>`
+      : `<span class="prog">${esc(p.error || '')}</span>`;
+    const label = p.keyword ? `在 X 搜索 <span class="kw">「${esc(p.keyword)}」</span>` : '读取 X 原帖';
+    return `<div class="step" title="${esc(p.error || '')}">${icon} ${label}${right}</div>`;
+  }
   if (p.type === 'search') {
     const icon = p.status === 'running' ? '<span class="spin"></span>' : p.status === 'done' ? '✓' : ['limited', 'login'].includes(p.status) ? '⚠' : '✗';
     const right = p.status === 'running' ? `<span class="prog">${esc(p.progress?.line || '启动浏览器…')}</span>`
@@ -2023,7 +2057,7 @@ let REMOTE = false;  // opened from a phone through 手机访问
   document.body.classList.toggle('remote', REMOTE);
   const startChat = location.hash.startsWith('#c=') ? decodeURIComponent(location.hash.slice(3)) : null;
   if (startChat) openChat(startChat, true); else newChat();
-  loadStatus();
+  loadStatus(); updateTwitterLogin();
   loadSettings().then(c => {
   if (c.backend === 'api' && !c.api.has_key) openSettings('第一次使用：请选择一个大模型服务商并填写 API Key');
   else if (location.hash === '#settings') { history.replaceState(null, '', location.pathname + location.search); openSettings(); }

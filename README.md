@@ -128,6 +128,8 @@ XHS_BROWSER_TEST=1 .venv/bin/python -m unittest discover -s tests -p test_fronte
 1. **登录小红书**：点「扫码登录小红书」会弹出一个 Chrome 窗口，用小红书 App 扫码即可。登录状态保存在 `data/profile`，一般能保持很久；过期了，助手会在对话里提示你重新扫码。
 2. **选大模型**：装了并登录了 Claude Code 的会自动使用它，其次是 Codex；都没有的话，会提示你在「设置」里填 API Key。
 
+**Twitter（X）调研**。点侧栏的「登录 X」，在弹出的 Chrome 中登录自己的 X 账号。登录会话使用数据目录下独立的 `twitter-profile`。发「在 X 上搜索某个话题」或粘贴 `x.com`、`twitter.com` 的原帖链接。搜索和读帖会打开可见的 Chrome 窗口，回答可以引用原帖。只提问、不指定来源时，仍默认查小红书。
+
 ## 命令行
 
 ```bash

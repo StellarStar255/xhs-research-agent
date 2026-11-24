@@ -14,6 +14,7 @@ from . import paths, procutil
 MAX_SEARCHES = 3         # search_xiaohongshu calls per turn
 MAX_OPEN = 24            # notes opened per turn
 MAX_OPEN_PER_CALL = 6
+MAX_X_CALLS = 4
 
 TOOLS = [
     {"type": "function", "function": {
@@ -47,9 +48,21 @@ TOOLS = [
             "note": {"type": "integer", "description": "笔记编号，也就是列表里 [3] 这样的数字"},
             "limit": {"type": "integer", "description": "要看几张，默认 4，最多 4"},
         }, "required": ["session", "note"]}}},
+    {"type": "function", "function": {
+        "name": "search_twitter",
+        "description": "用已登录的 X（Twitter）网页版搜索公开帖子，返回页面中已加载的帖子正文、作者、时间和原帖链接。",
+        "parameters": {"type": "object", "properties": {
+            "keyword": {"type": "string", "description": "X 搜索关键词"},
+        }, "required": ["keyword"]}}},
+    {"type": "function", "function": {
+        "name": "read_twitter_post",
+        "description": "读取一条 x.com 或 twitter.com 原帖链接的正文、作者和时间。",
+        "parameters": {"type": "object", "properties": {
+            "url": {"type": "string", "description": "X 或 Twitter 的原帖链接"},
+        }, "required": ["url"]}}},
 ]
 
-TOOLS_TEXT = f"""你有四个工具，像人刷小红书一样「先看列表，再挑着点开」：
+TOOLS_TEXT = f"""小红书工具按「先看列表，再挑着点开」使用：
 
 - `search_xiaohongshu(keyword)`：搜索，返回约 20 篇笔记的列表（标题、作者、赞藏评）。不打开笔记，不占额度。
   每轮对话最多搜 {MAX_SEARCHES} 次。
@@ -60,7 +73,13 @@ TOOLS_TEXT = f"""你有四个工具，像人刷小红书一样「先看列表，
   而且对回答很重要的笔记，就用它看图（比如价格表、清单、测评对比图）。每次最多 4 张、每轮最多 12 张。
   图片链接过一段时间会失效，所以要在打开后的同一轮里看。
 
-工具返回里的笔记链接可以直接用于引用。"""
+- `search_twitter(keyword)`：在 X 搜索公开帖，返回网页已加载的帖子。
+- `read_twitter_post(url)`：读指定 X 原帖（支持 x.com 和 twitter.com）。
+
+默认沿用小红书调研。用户明确指定 Twitter / X 为来源，或给了 X 原帖链接时，才调用 X 工具；
+只有用户要求两个来源时才都查。X 工具每轮最多调用 {MAX_X_CALLS} 次。
+如果 X 工具失败，本轮不要重试这个来源；若提示需要登录，请用户在电脑上点「登录 X」后再问一次。
+引用 X 时，使用工具返回的原帖链接，并注明来源为 X。"""
 
 
 class ToolRunner:
@@ -71,6 +90,8 @@ class ToolRunner:
         self.on_proc = on_proc or (lambda p: None)  # lets a caller stop a running scrape
         self.searches = 0
         self.opened = 0
+        self.x_calls = 0
+        self.x_blocked = ""
         self.cancelled = cancelled or (lambda: False)
 
     def _cli(self, *args):
@@ -97,6 +118,25 @@ class ToolRunner:
         if self.cancelled():
             return self._result("已被用户停止。", True)
         name = name.rsplit("__", 1)[-1]
+        if name in ("search_twitter", "read_twitter_post"):
+            search = name == "search_twitter"
+            key = "keyword" if search else "url"
+            value = args.get(key)
+            if not isinstance(value, str) or not value.strip() or len(value) > 2048:
+                return self._result(f"请提供有效的 {key} 参数。", True)
+            if self.x_blocked:
+                return self._result(self.x_blocked, True)
+            if self.x_calls >= MAX_X_CALLS:
+                return self._result("本轮已达到 X 读取上限，请用已有信息回答。", True)
+            self.x_calls += 1
+            out, failed = self._cli("x-search" if search else "x-read", "--", value.strip())
+            pattern = r"^X_(?:LOGIN_REQUIRED|LIMITED):" if failed else r"^X 帖子数: "
+            marker = re.search(pattern, out, re.MULTILINE)
+            if marker:
+                out = out[marker.start():]
+                if failed:
+                    self.x_blocked = out
+            return self._result(out, failed)
         if name == "search_xiaohongshu":
             keyword = str(args.get("keyword", "")).strip()
             if self.searches >= MAX_SEARCHES:
