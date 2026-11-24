@@ -71,12 +71,16 @@ def login(timeout_s=300):
     """Let the user enter credentials and complete any checks on x.com."""
     with browser(wait_s=0) as page:
         _open(page, HOME + "/home")
-        if page.locator(ACCOUNT).first.is_visible():
+        account = page.locator(ACCOUNT + ":visible").first
+        try:
+            account.wait_for(timeout=3000)
             return
+        except scraper.PlaywrightTimeout:
+            pass
         if not _login_required(page):
             _open(page, HOME + "/i/flow/login")
         try:
-            page.locator(ACCOUNT).first.wait_for(state="visible", timeout=timeout_s * 1000)
+            account.wait_for(timeout=timeout_s * 1000)
         except scraper.PlaywrightTimeout as exc:
             raise BrowseError("X 登录超时，请再试一次。") from exc
 
@@ -126,7 +130,9 @@ def _cards(articles, limit):
         if post_id in seen:
             continue
         seen.add(post_id)
-        results.append({**row, "url": canonical, "text": row["text"][:5000]})
+        # Keep 12 results, including headers and URLs, within the tool's 60k output window.
+        results.append({**row, "url": canonical, "text": row["text"][:4000],
+                        "author": row["author"][:300], "date": row["date"][:64]})
         if len(results) == limit:
             break
     return results
@@ -149,14 +155,15 @@ def read(value):
         _open(page, url)
         # A thread can include parent posts, quotes, and replies. Match the
         # timestamp's own status link before returning the requested post.
-        articles = page.locator(POSTS).filter(
-            has=page.locator(f'a[href$="/status/{post_id}"] time'))
+        timestamp = page.locator(
+            f"xpath=(.//time)[1]/ancestor::a[1][contains(concat(@href, '?'), '/status/{post_id}?')"
+            f" or contains(concat(@href, '?'), '/status/{post_id}/?')]")
+        articles = page.locator(POSTS).filter(has=timestamp)
         _ready(page, articles)
         results = _cards(articles, 12)
         for row in results:
             if post_url(row["url"])[1] == post_id:
                 return [row]
-        # A quoted timestamp can match the locator while the outer post differs.
         raise BrowseError("找不到这篇 X 帖子，可能已删除或无法访问。")
 
 
