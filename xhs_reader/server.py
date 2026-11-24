@@ -556,6 +556,16 @@ def stop(cid: str):
     return {"ok": True}
 
 
+@app.post("/api/chats/{cid}/queue/{qid}/retry")
+def retry_queue(cid: str, qid: str):
+    try:
+        if not agent.retry_queue(cid, qid):
+            raise HTTPException(409, "这条消息已处理或暂不可重试")
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(404, "找不到这个对话")
+    return {"ok": True}
+
+
 @app.get("/api/chats/{cid}/messages/{index}/reuse")
 def reuse_message(cid: str, index: int):
     try:
@@ -690,8 +700,9 @@ def models(req: SettingsReq):
 
 @app.get("/api/status")
 def status(refresh: bool = False):
+    from . import twitter
     lim = scraper.limits()
-    return {**_login_status(refresh), "limits": lim}
+    return {**_login_status(refresh), "limits": lim, "twitter_cooldown_until": twitter.cooldown_until()}
 
 
 def _login_status(refresh):

@@ -67,7 +67,7 @@ def _mcp_config(turn_id, source="auto"):
 def start(chat, text, image_names, turn_id=""):
     codex = settings.find_codex() or "codex"
     thread = chat.get("codex_thread")
-    web = settings.load()["web_search"]
+    web = agent.turn_web_search(chat)
     cmd = [codex, "exec"] + (["resume", thread] if thread else []) + [
         "--json", "--skip-git-repo-check", "--ignore-user-config",
         "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"',

@@ -3,6 +3,8 @@ import json
 import re
 import time
 from contextlib import contextmanager
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from urllib.parse import quote, urlsplit
 
 from . import paths, scraper
@@ -18,6 +20,10 @@ EMPTY = '[data-testid="emptyState"]'
 PAGE_TIMEOUT = 20000
 LOGIN_REQUIRED = "X_LOGIN_REQUIRED: 请点「登录 X」，在 Chrome 登录后再问一次。"
 LIMITED = "X_LIMITED: X 暂时限制访问，请稍后再试。"
+FALLBACK_COOLDOWN = 300
+NO_RESULTS = re.compile(r"^(?:No results for\b|未找到(?:任何)?(?:相关)?结果|没有找到(?:任何)?(?:相关)?结果|沒有(?:找到)?(?:任何)?(?:相關)?結果)", re.I)
+UNAVAILABLE = re.compile(r"^(?:This (?:post|tweet) (?:is unavailable|was deleted|doesn.t exist)|"
+                         r"(?:这条|此)(?:帖子|推文)(?:不可用|不存在|已删除))", re.I)
 
 
 class BrowseError(RuntimeError):
@@ -35,6 +41,45 @@ def login_state():
 def _save_login_state(state):
     if login_state() != state:
         atomic_json(paths.DATA_DIR / "twitter-login.json", state)
+
+
+def _cooldown_until():
+    try:
+        value = max(0, int(read_json(paths.DATA_DIR / "twitter-cooldown.json")))
+        datetime.fromtimestamp(value)
+        return value
+    except (OSError, ValueError, TypeError, OverflowError):
+        return 0
+
+
+def _check_cooldown():
+    until = cooldown_until()
+    if until:
+        resume = datetime.fromtimestamp(until).strftime("%Y-%m-%d %H:%M:%S")
+        raise BrowseError(f"X_LIMITED: X 暂停访问，{resume} 后可重试。")
+
+
+def cooldown_until():
+    until = _cooldown_until()
+    return until if until > time.time() else 0
+
+
+def _record_limit(response):
+    retry_after = response.headers.get("retry-after", "").strip()
+    now = time.time()
+    try:
+        if retry_after.isascii() and retry_after.isdecimal():
+            until = now + int(retry_after)
+        else:
+            retry_date = parsedate_to_datetime(retry_after)
+            if retry_date.tzinfo is None:
+                raise ValueError("Retry-After date requires a timezone")
+            until = retry_date.timestamp()
+        datetime.fromtimestamp(until)
+    except (ValueError, TypeError, OSError, OverflowError):
+        until = now + FALLBACK_COOLDOWN
+    until = max(int(now) + 1, int(until + 0.999), _cooldown_until())
+    atomic_json(paths.DATA_DIR / "twitter-cooldown.json", until)
 
 
 def post_url(value):
@@ -55,31 +100,35 @@ def browser(wait_s=30):
     root = paths.DATA_DIR
     root.mkdir(parents=True, exist_ok=True)
     with file_lock(root / "twitter-browser.guard", timeout=wait_s):
+        _check_cooldown()
         # X served the login page in visible Chrome while headless Chrome got HTTP 403.
         with scraper._browser_context(headless=False, profile_dir=root / "twitter-profile") as ctx:
             yield ctx.pages[0] if ctx.pages else ctx.new_page()
 
 
-def _open(page, url):
-    status = None
+def _open(page, url, post=False):
+    response = None
 
-    def navigation_response(response):
-        nonlocal status
-        if response.request.is_navigation_request() and response.frame == page.main_frame:
-            status = response.status
+    def navigation_response(candidate):
+        nonlocal response
+        if candidate.request.is_navigation_request() and candidate.frame == page.main_frame:
+            response = candidate
 
     page.on("response", navigation_response)
     try:
-        response = page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
-        if response:
-            status = response.status
+        response = page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT) or response
     except scraper.PlaywrightError:
-        if status is None or status < 400:
+        if response is None or response.status < 400:
             raise
     finally:
         page.remove_listener("response", navigation_response)
+    status = response.status if response else None
     if status == 429:
+        _record_limit(response)
+        _check_cooldown()
         raise BrowseError(LIMITED)
+    if post and status in (404, 410):
+        raise BrowseError("找不到这篇 X 帖子，可能已删除或无法访问。")
     if status is not None and status >= 400:
         raise BrowseError(f"X 网页无法打开（HTTP {status}）。")
 
@@ -116,18 +165,24 @@ def _login_required(page):
             or any(page.locator(selector + ":visible").first.is_visible() for selector in LOGIN_FORM))
 
 
-def _ready(page, target, limited):
-    visible_states = page.locator(", ".join(f"{state}:visible" for state in (EMPTY, *LOGIN_FORM)))
-    ready = target.and_(page.locator(":visible")).or_(visible_states).first
+def _ready(page, target, limited, search=False):
+    ready = target.and_(page.locator(":visible")).first
+    empty = page.locator(EMPTY + ":visible")
+    terminal = (empty.get_by_text(NO_RESULTS) if search else
+                page.locator(f'{EMPTY}, [data-testid="tweetUnavailable"], [data-testid="primaryColumn"]')
+                .get_by_text(UNAVAILABLE))
     deadline = time.monotonic() + PAGE_TIMEOUT / 1000
     while True:
         if limited():
+            _check_cooldown()
             raise BrowseError(LIMITED)
         if _login_required(page):
             _save_login_state("expired")
             raise BrowseError(LOGIN_REQUIRED)
         if ready.is_visible():
-            return
+            return True
+        if terminal.first.is_visible():
+            return False
         if time.monotonic() >= deadline:
             raise BrowseError("X 网页未能加载帖子，请在 Chrome 中确认页面可以打开。")
         page.wait_for_timeout(200)
@@ -144,6 +199,7 @@ def _post_page(operation):
                 url = urlsplit(response.url)
                 if (url.hostname in HOSTS | {"api.x.com", "api.twitter.com"}
                         and "/graphql/" in url.path and url.path.endswith("/" + operation)):
+                    _record_limit(response)
                     limited = True
 
         page.on("response", on_response)
@@ -190,9 +246,10 @@ def search(keyword):
     with _post_page("SearchTimeline") as (page, limited):
         _open(page, HOME + "/search?q=" + quote(keyword, safe="") + "&src=typed_query")
         articles = page.locator(POSTS)
-        _ready(page, articles, limited)
+        if not _ready(page, articles, limited, search=True):
+            return []
         results = _cards(articles, 12)
-        if not results and not page.locator(EMPTY).first.is_visible():
+        if not results:
             raise BrowseError("X 网页没有返回可识别的帖子，请稍后再试。")
         return results
 
@@ -200,15 +257,14 @@ def search(keyword):
 def read(value):
     url, post_id = post_url(value)
     with _post_page("TweetDetail") as (page, limited):
-        _open(page, url)
+        _open(page, url, post=True)
         # A thread can include parent posts, quotes, and replies. Match the
         # timestamp's own status link before returning the requested post.
         timestamp = page.locator(
             f"xpath=(.//time)[1]/ancestor::a[1][contains(concat(@href, '?'), '/status/{post_id}?')"
             f" or contains(concat(@href, '?'), '/status/{post_id}/?')]")
         articles = page.locator(POSTS).filter(has=timestamp)
-        _ready(page, articles, limited)
-        results = _cards(articles, 12)
+        results = _cards(articles, 12) if _ready(page, articles, limited) else []
         for row in results:
             if post_url(row["url"])[1] == post_id:
                 return [row]

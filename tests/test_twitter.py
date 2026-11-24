@@ -83,6 +83,29 @@ class TwitterTests(IsolatedTest):
         agent.apply_tool_output(step, twitter.digest([row]))
         self.assertEqual(step["posts"], [{**row, "url": "https://x.com/user/status/123"}])
 
+    def test_retry_after_persists_and_prevents_opening_x_browser(self):
+        with patch.object(twitter.time, "time", return_value=1_000_000):
+            twitter._record_limit(Mock(headers={"retry-after": "120"}))
+            self.assertEqual(twitter._cooldown_until(), 1_000_120)
+            twitter._record_limit(Mock(headers={"retry-after": "Mon, 12 Jan 1970 14:00:00 GMT"}))
+            self.assertEqual(twitter._cooldown_until(), 1_000_800)
+        context = Mock(pages=[object()])
+        with patch.object(scraper, "_browser_context", return_value=nullcontext(context)) as start:
+            with patch.object(twitter.time, "time", return_value=1_000_799):
+                with self.assertRaisesRegex(twitter.BrowseError, "X_LIMITED"), twitter.browser(wait_s=0):
+                    pass
+                start.assert_not_called()
+                with scraper._browser_context(headless=True):
+                    pass
+            with patch.object(twitter.time, "time", return_value=1_000_800):
+                with twitter.browser(wait_s=0) as page:
+                    self.assertIs(page, context.pages[0])
+
+    def test_missing_retry_after_uses_default_cooldown(self):
+        with patch.object(twitter.time, "time", return_value=1_000_000):
+            twitter._record_limit(Mock(headers={}))
+            self.assertEqual(twitter._cooldown_until(), 1_000_000 + twitter.FALLBACK_COOLDOWN)
+
     def test_full_search_preserves_the_tool_output_header(self):
         articles = Mock()
         articles.evaluate_all.return_value = [
@@ -115,12 +138,23 @@ class TwitterTests(IsolatedTest):
                 def fixture(route):
                     url = route.request.url
                     if "/SearchTimeline" in url:
-                        return route.fulfill(status=429, body="Too many requests")
+                        return route.fulfill(status=429, headers={"retry-after": "600"}, body="Too many requests")
                     if "background-limit" in url:
                         return route.fulfill(content_type="text/html", body=
                                              "<p>Loading</p><script>fetch('/i/api/graphql/test/SearchTimeline')</script>")
                     if "limited" in url:
                         return route.fulfill(status=429, body="Too many requests")
+                    if "no-results" in url:
+                        return route.fulfill(content_type="text/html", body=
+                                             '<div data-testid="emptyState"><h2>No results for your query</h2></div>')
+                    if "loading-error" in url:
+                        return route.fulfill(content_type="text/html", body=
+                                             '<div data-testid="emptyState"><h2>Something went wrong</h2></div>')
+                    if "/status/404" in url:
+                        return route.fulfill(status=404, body="Not found")
+                    if "/status/410" in url:
+                        return route.fulfill(content_type="text/html", body=
+                                             '<div data-testid="tweetUnavailable">This post is unavailable</div>')
                     if "/status/123" in url:
                         quote = article(456, '引用 <a href="/author/status/123"><time>今天</time></a>')
                         original = article(123, "目标正文").replace('/status/123"', '/status/123?s=20"')
@@ -138,6 +172,13 @@ class TwitterTests(IsolatedTest):
                         "() => new URL(location.href).searchParams.get('q')"))
                     result = twitter.read("https://twitter.com/author/status/123?s=20")
                     self.assertEqual([row["text"] for row in result], ["目标正文"])
+                    self.assertEqual(twitter.search("no-results"), [])
+                    with patch.object(twitter, "PAGE_TIMEOUT", 600):
+                        with self.assertRaisesRegex(twitter.BrowseError, "未能加载"):
+                            twitter.search("loading-error")
+                    for missing in (404, 410):
+                        with self.assertRaisesRegex(twitter.BrowseError, "帖子，可能已删除"):
+                            twitter.read(f"https://x.com/user/status/{missing}")
                     with self.assertRaisesRegex(twitter.BrowseError, "X_LOGIN_REQUIRED"):
                         twitter.search("expired")
                     with patch.object(server, "_twitter_login", {"state": "done", "message": "已登录 X"}):

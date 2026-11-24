@@ -357,9 +357,11 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   <div id="taskProgress" class="task-progress" hidden><strong id="taskStage" role="status"></strong><span id="taskElapsed"></span><button id="taskStop" class="gear">停止</button></div>
   <div id="scroll"><div class="thread" id="thread"></div></div>
   <div class="composer">
-    <label class="research-source">调研来源
-      <select id="researchSource"><option value="auto">默认（小红书）</option><option value="twitter">X</option><option value="both">小红书 + X</option></select>
-    </label>
+    <div class="research-source">
+      <label for="researchSource">调研来源</label>
+      <select id="researchSource"><option value="auto">默认（小红书）</option><option value="twitter">仅 X</option><option value="both">小红书 + X</option></select>
+      <span id="twitterCooldown" role="status" hidden></span>
+    </div>
     <div class="box">
       <div class="thumbs" id="thumbs"></div>
       <button class="attach" id="attach" title="添加图片">＋</button>
@@ -476,12 +478,14 @@ function activateDraft(id) {
   draftLoadingTicket = ticket; draftLoadingEdits = edits;
   $('#input').value = draftMemory.get(key)?.text || draftLocal(key)?.text || ''; pending = [];
   $('#researchSource').value = draftMemory.get(key)?.source || draftLocal(key)?.source || 'auto';
+  renderTwitterCooldown();
   renderThumbs(); autosize();
   draftLoadPromise = readDraft(key).then(value => {
     if (ticket !== draftNavigation) return;
     if (edits === draftEdits) {
       $('#input').value = typeof value.text === 'string' ? value.text : '';
       $('#researchSource').value = value.source || 'auto';
+      renderTwitterCooldown();
     }
     const restored = (Array.isArray(value.images) ? value.images : []).filter(p => p && /^image\/(png|jpeg|webp|gif)$/.test(p.media_type) && typeof p.data === 'string' && /^[A-Za-z0-9+/=]*$/.test(p.data))
       .map(p => ({...p, url: `data:${p.media_type};base64,${p.data}`}));
@@ -1024,6 +1028,8 @@ async function loadStatus(refresh) {
     const s = await api('/api/status' + (refresh ? '?refresh=1' : ''));
     if (request !== statusRequest) return;
     renderLimits(s.limits);
+    twitterCooldownUntil = s.twitter_cooldown_until || 0;
+    renderTwitterCooldown();
     if (s.needs_notice) { $('#loginText').textContent = '同意使用须知后检查登录'; return; }
     if (s.login_pending) { $('#loginText').textContent = '正在等待扫码登录…'; return; }
     if (s.busy) { if (loggedIn === null) $('#loginText').textContent = s.limits?.cooldown_until ? '登录状态：冷却中不检查' : '浏览器忙碌中…'; return; }
@@ -1038,6 +1044,18 @@ async function loadStatus(refresh) {
 }
 
 /* ---------- 小红书 login ---------- */
+let twitterCooldownUntil = 0;
+function renderTwitterCooldown() {
+  const el = $('#twitterCooldown');
+  const source = $('#researchSource').value;
+  el.hidden = source === 'auto' || twitterCooldownUntil * 1000 <= Date.now();
+  if (el.hidden) { el.textContent = ''; return; }
+  const time = new Date(twitterCooldownUntil * 1000);
+  const format = {hour:'2-digit', minute:'2-digit', second:'2-digit'};
+  if (time.toDateString() !== new Date().toDateString()) Object.assign(format, {month:'numeric', day:'numeric'});
+  el.textContent = `X 暂停访问，${time.toLocaleString('zh-CN', format)} 后可重试`;
+}
+
 let loginPoll = null;
 let loginStarting = false;
 function loginState(text, cls) {
@@ -1447,7 +1465,8 @@ function renderThread(chat, jump) {
     const imgs = (q.images || []).map(n => `<img src="/api/chats/${esc(chat.id)}/images/${esc(n)}" data-zoom>`).join('');
     return `<div class="msg user queued"><div class="col">${imgs ? `<div class="uimgs">${imgs}</div>` : ''}
       ${q.text ? `<div class="bubble">${esc(q.text)}</div>` : ''}${sourceNote(q.source)}
-      <div class="qnote">排队中 · 当前回答结束后自动发送<button data-unqueue="${esc(q.id)}">取消</button></div></div></div>`;
+      <div class="qnote">${q.error ? `发送失败 · ${esc(q.error)}<button data-retry-queue="${esc(q.id)}">重试</button>`
+        : '排队中 · 当前回答结束后自动发送'}<button data-unqueue="${esc(q.id)}">取消</button></div></div></div>`;
   }));
   reconcileThread(threadHtml);
   document.querySelectorAll('[data-diagnostic]').forEach(b => b.onclick = () => showDiagnostics({operation:'回答失败',error:lastChat.messages[+b.dataset.diagnostic].error || '回答出错'}));
@@ -1459,6 +1478,7 @@ function renderThread(chat, jump) {
       if (($('#input').value || pending.length) && !confirm('用恢复的消息替换当前输入草稿？')) return;
       $('#input').value = value.text; pending = value.images.map(p => ({...p, url: `data:${p.media_type};base64,${p.data}`}));
       $('#researchSource').value = value.source || 'auto';
+      renderTwitterCooldown();
       draftEdits++; renderThumbs(); autosize(); saveComposerDraft(); $('#input').focus();
       if (value.missing_images) historyToast('部分原图片已不存在，已恢复可用内容');
     } catch (e) { historyToast(e.message); }
@@ -1467,12 +1487,19 @@ function renderThread(chat, jump) {
     if ($('#input').value || pending.length) return historyToast('请先发送或保存当前草稿，再继续中断的回答');
     const question = lastChat.messages.slice(0, +b.dataset.continue).reverse().find(m => m.role === 'user' && !m.recovered_queue);
     $('#researchSource').value = question?.source || 'auto';
+    renderTwitterCooldown();
     $('#input').value = question?.text ? '请继续回答这个问题：\n' + question.text : '请继续上次被中断的回答。';
     draftEdits++; autosize(); saveComposerDraft(); $('#input').focus();
   });
   document.querySelectorAll('[data-unqueue]').forEach(b => b.onclick = async () => {
     try { await api(`/api/chats/${encodeURIComponent(chat.id)}/queue/${b.dataset.unqueue}`, {method: 'DELETE'}); } catch {}
     openChat(chat.id);
+  });
+  document.querySelectorAll('[data-retry-queue]').forEach(b => b.onclick = async () => {
+    try {
+      await api(`/api/chats/${encodeURIComponent(chat.id)}/queue/${encodeURIComponent(b.dataset.retryQueue)}/retry`, {method:'POST'});
+      if (current === chat.id) openChat(chat.id);
+    } catch (e) { historyToast(e.message); }
   });
   document.querySelectorAll('.md a').forEach(a => { a.target = '_blank'; a.rel = 'noopener noreferrer'; });
   document.querySelectorAll('[data-session]').forEach(b => b.onclick = () => openNotes(b.dataset.session));
@@ -1655,7 +1682,7 @@ async function send() {
     const latest = sourceKey === activeDraftKey ? composerSnapshot() : await readDraft(sourceKey);
     const restored = {text: [text, latest.text].filter(Boolean).join('\n\n'), source: latest.source || source, images: [...images, ...latest.images].filter((p, i, all) => all.findIndex(q => q.data === p.data && q.media_type === p.media_type) === i), at: Date.now()};
     await writeDraft(sourceKey, restored);
-    if (sourceKey === activeDraftKey) { $('#input').value = restored.text; $('#researchSource').value = restored.source; pending = restored.images.map(p => ({...p, url: `data:${p.media_type};base64,${p.data}`})); draftEdits++; renderThumbs(); autosize(); }
+    if (sourceKey === activeDraftKey) { $('#input').value = restored.text; $('#researchSource').value = restored.source; renderTwitterCooldown(); pending = restored.images.map(p => ({...p, url: `data:${p.media_type};base64,${p.data}`})); draftEdits++; renderThumbs(); autosize(); }
     if (e.message.includes('设置')) openSettings(e.message); else alert(e.message);
   } finally { sendInFlight = false; updateComposer(); }
 }
@@ -1663,7 +1690,7 @@ $('#send').onclick = () => send();
 $('#stop').onclick = async () => { if (current) await api(`/api/chats/${current}/stop`, {method: 'POST'}).catch(() => {}); };
 function autosize() { const t = $('#input'); t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; updateComposer(); }
 $('#input').oninput = () => { draftEdits++; autosize(); saveComposerDraft(true); };
-$('#researchSource').onchange = () => { draftEdits++; saveComposerDraft(); };
+$('#researchSource').onchange = () => { draftEdits++; saveComposerDraft(); renderTwitterCooldown(); };
 $('#input').onkeydown = e => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !TOUCH) { e.preventDefault(); send(); }
 };

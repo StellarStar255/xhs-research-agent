@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from test_optimizations import IsolatedTest
-from xhs_reader import agent, server, settings
+from xhs_reader import agent, server, settings, twitter
 
 
 @unittest.skipUnless(os.environ.get('XHS_BROWSER_TEST') == '1', 'optional local Chrome check')
@@ -122,6 +122,15 @@ class FrontendTests(IsolatedTest):
                         expect(page.locator('#loginText')).to_have_text('已登录：测试', timeout=10000)
                         expect(page.locator('.login-card')).to_have_count(0)
                     expect(gui.locator('#researchSource')).to_have_value('auto')
+                    self.stack.enter_context(patch.object(twitter, 'cooldown_until', return_value=int(time.time()) + 600))
+                    gui.evaluate("loadStatus()")
+                    expect(gui.locator('#twitterCooldown')).to_be_hidden()
+                    gui.locator('#researchSource').select_option('twitter')
+                    expect(gui.locator('#twitterCooldown')).to_contain_text('X 暂停访问')
+                    gui.locator('#researchSource').select_option('both')
+                    expect(gui.locator('#twitterCooldown')).to_be_visible()
+                    gui.locator('#researchSource').select_option('auto')
+                    expect(gui.locator('#twitterCooldown')).to_be_hidden()
                     gui.evaluate("""() => renderThread({id:'test', messages:[
                         {role:'user', text:'研究这个问题', source:'both'},
                         {role:'assistant', parts:[{type:'twitter', status:'done', tool_id:'x-test', count:1, posts:[

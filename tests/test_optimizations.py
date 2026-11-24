@@ -426,6 +426,58 @@ class LifecycleTests(IsolatedTest):
                 time.sleep(.01)
             self.assertEqual(calls, [('first', 'auto'), ('second', 'twitter'), ('third', 'both')])
 
+    def test_submit_cannot_overtake_pending_queue_between_turns(self):
+        chat = self.chat()
+        chat["queued"] = [{"id": "older", "text": "older", "source": "both", "images": []}]
+        agent._save(chat)
+        with patch.object(agent, "send") as start, patch.object(agent, "_send_queued_later") as drain:
+            self.assertEqual(agent.submit(chat["id"], "newer", source="twitter"), (chat["id"], True))
+            start.assert_not_called()
+            drain.assert_called_once_with(chat["id"])
+        queued = agent.load(chat["id"])["queued"]
+        self.assertEqual([(m["text"], m["source"]) for m in queued], [("older", "both"), ("newer", "twitter")])
+
+    def test_failed_queue_transfer_preserves_previous_answer_and_can_retry(self):
+        chat = self.chat()
+        cid = chat["id"]
+        chat["messages"][-1]["status"] = "done"
+        image = "qolder_0.png"
+        agent.image_dir(cid).mkdir(parents=True, exist_ok=True)
+        (agent.image_dir(cid) / image).write_bytes(b"image fixture")
+        queued = {"id": "older", "text": "保留的问题", "source": "twitter", "images": [image]}
+        chat["queued"] = [queued]
+        agent._save(chat)
+        real_save = agent._save
+        failure_saved = threading.Event()
+
+        def fail_transfer(candidate):
+            if not candidate["queued"]:
+                raise OSError("写入失败")
+            real_save(candidate)
+            failure_saved.set()
+
+        with (
+            patch.object(agent, "_save", side_effect=fail_transfer),
+            patch.object(agent, "_send_queued_later", _REAL_SEND_QUEUED),
+        ):
+            agent._send_queued_later(cid)
+            self.assertTrue(failure_saved.wait(2))
+        saved = agent.load(cid)
+        self.assertEqual(saved["messages"], chat["messages"])
+        self.assertEqual(saved["queued"], [{**queued, "error": "写入失败"}])
+
+        started = threading.Event()
+        with (
+            patch.object(llm, "run_turn", side_effect=lambda _: started.set()),
+            patch.object(agent, "_send_queued_later", _REAL_SEND_QUEUED),
+        ):
+            self.assertTrue(agent.retry_queue(cid, "older"))
+            self.assertTrue(started.wait(2))
+        saved = agent.load(cid)
+        self.assertEqual(saved["queued"], [])
+        self.assertEqual(saved["messages"][-2], {"role": "user", "text": queued["text"],
+                                                  "source": "twitter", "images": [image]})
+
     def test_retry_thread_start_failure_cleans_registered_run(self):
         chat = self.chat(claude_session='old-session')
         chat['messages'][-1].update(status='error', error_kind='error_during_execution')

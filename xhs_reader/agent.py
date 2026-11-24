@@ -353,14 +353,19 @@ def turn_source(chat):
                  if message.get("role") == "user"), "auto")
 
 
+def turn_web_search(chat):
+    return turn_source(chat) != "twitter" and settings.load()["web_search"]
+
+
 def submit(cid, text, images=(), source="auto"):
     """Send a message: start a turn now, or — while this chat's turn is still running —
     queue it to be sent when that turn ends. Returns (chat id, queued)."""
     with _lock:
         if cid in _deleting:
             raise RuntimeError("这个对话正在删除")
-        if cid and is_running(cid):
-            chat = load(cid)
+        chat = load(cid) if cid else None
+        running = bool(cid and is_running(cid))
+        if chat is not None and (running or chat.get("queued")):
             queue = chat.setdefault("queued", [])
             if len(queue) >= MAX_QUEUED:
                 raise RuntimeError(f"最多排队 {MAX_QUEUED} 条，请等当前回答结束")
@@ -368,6 +373,8 @@ def submit(cid, text, images=(), source="auto"):
             queue.append({"id": qid, "text": text, "source": source,
                           "images": _save_images(cid, images, f"q{qid}")})
             _save(chat)
+            if not running:
+                _send_queued_later(cid)
             return cid, True
         return send(cid, text, images, source=source), False
 
@@ -381,10 +388,25 @@ def unqueue(cid, qid):
             (gone if q["id"] == qid else keep).append(q)
         chat["queued"] = keep
         _save(chat)
+        if gone and keep and not keep[0].get("error") and not is_running(cid):
+            _send_queued_later(cid)
     for q in gone:
         for n in q.get("images") or []:
             (image_dir(cid) / n).unlink(missing_ok=True)
     return bool(gone)
+
+
+def retry_queue(cid, qid):
+    with _lock:
+        chat = load(cid)
+        queue = chat.get("queued") or []
+        if cid in _deleting or not queue or queue[0]["id"] != qid or not queue[0].get("error"):
+            return False
+        del queue[0]["error"]
+        _save(chat)
+        if not is_running(cid):
+            _send_queued_later(cid)
+        return True
 
 
 def _save_images(cid, images, prefix):
@@ -413,26 +435,28 @@ def _send_queued_later(cid):
             except (FileNotFoundError, ValueError):
                 return
             queue = chat.get("queued") or []
-            if not queue or is_running(cid):
+            if not queue or queue[0].get("error") or is_running(cid):
                 return
             source = queue[0].get("source", "auto")
             end = next((i for i, q in enumerate(queue) if q.get("source", "auto") != source), len(queue))
-            batch, chat["queued"] = queue[:end], queue[end:]
-            _save(chat)
+            batch = queue[:end]
+            ids = [q["id"] for q in batch]
             text = "\n\n".join(q["text"] for q in batch if q.get("text"))
             names = [n for q in batch for n in q.get("images") or []]
             try:
-                send(cid, text, names=names, source=source)
+                send(cid, text, names=names, source=source, queued_ids=ids)
             except Exception as e:
-                def fail(chat, msg, e=e):
-                    msg.update(status="error", error=f"排队的消息没能发送：{e}")
-                update(cid, fail)
-                if chat["queued"]:
+                saved = load(cid)
+                pending = saved.get("queued") or []
+                if pending and pending[0]["id"] == ids[0]:
+                    pending[0]["error"] = str(e)[:200] or "无法保存本轮消息"
+                    _save(saved)
+                elif pending:
                     _send_queued_later(cid)
     threading.Thread(target=run, daemon=True).start()
 
 
-def send(cid, text, images=(), names=None, source="auto"):
+def send(cid, text, images=(), names=None, source="auto", queued_ids=()):
     """Start a turn. Returns the chat id (creating a chat if cid is None).
 
     images: [{"media_type": "image/png", "data": <base64>}] — saved next to the chat
@@ -482,6 +506,8 @@ def send(cid, text, images=(), names=None, source="auto"):
         chat["messages"].append({"role": "user", "text": text, "images": names, "source": source})
         chat["messages"].append({"role": "assistant", "parts": [], "draft": "", "status": "running",
                                  "started": time.time(), "model": _model_label(chat)})
+        if queued_ids:
+            chat["queued"] = [q for q in chat["queued"] if q["id"] not in queued_ids]
         chat["updated"] = time.strftime("%Y-%m-%d %H:%M")
         _save(chat)
 
@@ -621,7 +647,7 @@ def _start_claude(chat, text, images, turn_id=""):
     # No built-in tools that touch the machine (no Bash, no Read: Read can't be confined to a
     # folder); our MCP server's tools enforce the per-turn budgets themselves. WebSearch (if the
     # user allowed it) only returns search results; WebFetch stays off.
-    web = settings.load()["web_search"]
+    web = turn_web_search(chat)
     cmd = [settings.find_claude() or "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
            "--include-partial-messages", "--system-prompt", system_prompt(TOOLS_TEXT, web),
            "--tools", "WebSearch" if web else "", "--mcp-config", mcp_config, "--strict-mcp-config",

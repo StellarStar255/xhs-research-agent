@@ -139,6 +139,21 @@ class ModelSelectionTests(IsolatedTest):
         self.assertNotIn('--model', cmd)
         self.assertFalse(any('model_reasoning_effort=' in value for value in cmd))
 
+    def test_x_only_turn_disables_builtin_web_search_for_both_clis(self):
+        settings.update(lambda s: s.update(web_search=True))
+        chat = self.chat(model_config={})
+        for source, enabled in (("twitter", False), ("both", True), ("auto", True)):
+            user = next(message for message in chat["messages"] if message["role"] == "user")
+            user["source"] = source
+            with patch.object(settings, "find_codex", return_value="codex"), \
+                 patch.object(codex_backend, "_features_to_disable", return_value=[]), \
+                 patch.object(agent.procutil, "popen") as spawn:
+                codex_backend.start(chat, "question", [], "turn")
+                self.assertIn('web_search="live"' if enabled else 'web_search="disabled"', spawn.call_args.args[0])
+                agent._start_claude(chat, "question", [], "turn")
+                cmd = spawn.call_args.args[0]
+                self.assertEqual(cmd[cmd.index("--tools") + 1], "WebSearch" if enabled else "")
+
     def test_claude_custom_model_and_effort_passed(self):
         chat = self.chat(backend='claude', model_config={'claude_model':'claude-concrete-id', 'claude_effort':'medium'})
         with patch.object(settings, 'find_claude', return_value='claude'), patch.object(settings, 'claude_efforts', return_value=['low','medium','high']), patch.object(agent.procutil, 'popen') as spawn:
